@@ -543,56 +543,92 @@ def extract_closed_caption_bytes(img, fixed_line=None):
         code = decode_byte_pair(byte1, byte2)
         control = (byte1, byte2) in ALL_CC_CONTROL_CODES
         return code, control, byte1, byte2
+    
+def get_output_function(extension, output_filename):
+    if output_filename is not None:
+        f = open(output_filename + f".{extension}", 'w')
+        out_func = lambda out : print(out, file=f)
+    else:
+        f = None
+        out_func = print
 
+    return out_func, f
 
-def decode_captions_raw(image_list, fixed_line=None, merge_text=False, delete_image_after=True, ccfilter=None):
+def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, output_filename=None):
     """ Raw output, show the frame caption codes and frame numbers
-         image_list         - list (or generator) of image objects with a get_pixel_luma method
+         rx                 - input connection for decoded cc data
          merge_text         - merge runs of text together and display in a block
-         delete_image_after - delete passed images after they've been processed
          fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored """
+         ccfilter           - ignored 
+         output_filename    - file name without extension to save decoded captions
+    """
     buff = ''  # CC Buffer
     frame = 0
-    for image in image_list:
-        code, control, b1, b2 = extract_closed_caption_bytes(image, fixed_line)
+
+    out_func, f = get_output_function("captions.raw", output_filename)
+
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+
+        code, control, b1, b2 = data
         if code is None:
-            print('%i skip - no preamble' % frame)
+            out_func('%i skip - no preamble' % frame)
         else:
             if code and not control:
                 if merge_text:
                     buff += code
                 else:
-                    print('%i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
+                    out_func('%i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
             elif buff:
-                print('%i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, buff))
+                out_func('%i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, buff))
                 buff = ''
             if control:
-                print('%i (%i,%i) - [%02x, %02x] - %s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
+                out_func('%i (%i,%i) - [%02x, %02x] - %s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
         frame += 1
-        if delete_image_after:
-            image.unlink()
+
+    if f is not None:
+        f.close()
 
 
-def decode_captions_debug(image_list, fixed_line=None, delete_image_after=True, ccfilter=None):
+def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Debug output, show the frame caption codes and frame numbers
+         rx                 - input connection for decoded cc data
          image_list         - list (or generator) of image objects with a get_pixel_luma method
-         delete_image_after - delete passed images after they've been processed
          fixed_line         - check a particular line for cc-signal (and no others)
          ccfilter           - ignored
-         """
+         output_filename    - file name without extension to save decoded captions
+    """
     frame = 0
     codes = []
-    for image in image_list:
-        code, control, b1, b2 = extract_closed_caption_bytes(image, fixed_line)
+
+    out_func, f = get_output_function("captions.debug", output_filename)
+    
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+
+        code, control, b1, b2 = data
         if code is None:
-            print('%i skip - no preamble' % frame)
+            out_func('%i skip - no preamble' % frame)
         else:
-            print('%i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
+            out_func('%i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
             codes.append([b1, b2])
         frame += 1
-        if delete_image_after:
-            image.unlink()
+    
+    if f is not None:
+        f.close()    
+    
     return codes
 
 
@@ -606,28 +642,39 @@ def timestamp(frame_number, fps):
     return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
 
 
-def dump_srt_caption(caption_text, start_frame, end_frame, fps, subtitle_count=None):
+def dump_srt_caption(caption_text, start_frame, end_frame, fps, out_func, subtitle_count=None):
     """ Display an SRT format closed caption """
     if subtitle_count is not None:
-        print(subtitle_count)  # Required by: https://docs.fileformat.com/video/srt/
-    print('%s --> %s\n%s\n' % (timestamp(start_frame, fps), timestamp(end_frame, fps), caption_text))
+        out_func(subtitle_count)  # Required by: https://docs.fileformat.com/video/srt/
+    out_func('%s --> %s\n%s\n' % (timestamp(start_frame, fps), timestamp(end_frame, fps), caption_text))
 
 
-def decode_image_list_to_srt_roll(image_list, fixed_line=None, frames_per_second=29.97, delete_image_after=True, ccfilter=None):
+def decode_image_list_to_srt_roll(rx, fixed_line=None, frames_per_second=29.97, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of SRT subtitles. Assumes Roll-up format closed captions
-         image_list         - list of image file paths
+         rx                 - input connection for decoded cc data
          frames_per_second  - how many fps is the passed list of images
-         delete_image_after - delete the image file after we have done processing it
          fixed_line         - check a particular line for cc-signal (and no others)
          ccfilter           - ignored for now
+         output_filename    - file name without extension to save decoded captions
     """
     buffer = ['', '', '', '']
     buffer_len = 4
     frame = 0
     subtitle_start_frame = 0
     subtitle_count = 1
-    for image in image_list:
-        code, control, _, _ = extract_closed_caption_bytes(image, fixed_line=fixed_line)
+
+    out_func, f = get_output_function("srt", output_filename)
+    
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+
+        code, control, _, _ = data
         if code is not None:
         # PROCESS:
             if not control:
@@ -641,12 +688,12 @@ def decode_image_list_to_srt_roll(image_list, fixed_line=None, frames_per_second
                     else:  #Probably the start of a comamnd sequence
                         pass
                 elif code.endswith('Erase Displayed Memory'):
-                    dump_srt_caption('\n'.join(reversed(buffer)), subtitle_start_frame, frame, frames_per_second, subtitle_count)
+                    dump_srt_caption('\n'.join(reversed(buffer)), subtitle_start_frame, frame, frames_per_second, out_func, subtitle_count)
                     subtitle_count += 1
                     subtitle_start_frame = frame
                     buffer = [''] * buffer_len
                 elif code.endswith('Carriage Return'):
-                    dump_srt_caption('\n'.join(reversed(buffer)), subtitle_start_frame, frame, frames_per_second, subtitle_count)
+                    dump_srt_caption('\n'.join(reversed(buffer)), subtitle_start_frame, frame, frames_per_second, out_func, subtitle_count)
                     subtitle_start_frame = frame
                     subtitle_count += 1
                     # Roll-up subs
@@ -659,8 +706,9 @@ def decode_image_list_to_srt_roll(image_list, fixed_line=None, frames_per_second
 
         prevcode = code
         frame += 1
-        if delete_image_after:
-            image.unlink()
+    
+    if f is not None:
+        f.close()
 
 def match_code_filter(code, txt_to_match, cc_filter):
     if txt_to_match in code:
@@ -668,14 +716,15 @@ def match_code_filter(code, txt_to_match, cc_filter):
             return CC_FILTER_TO_TXT[cc_filter] in code
         return True
 
-def decode_image_list_to_srt(image_list, fixed_line=None, frames_per_second=29.97, delete_image_after=True, ccfilter=None):
+def decode_image_list_to_srt(rx, fixed_line=None, frames_per_second=29.97, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of SRT subtitles. Assumes Pop-on format closed captions
+         rx                 - input connection for decoded cc data
          image_list         - list of image file paths
          frames_per_second  - how many fps is the passed list of images
-         delete_image_after - delete the image file after we have done processing it
          fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - filter for a particular caption stream CC[1], CC[2] - None or 0 means all captions"""
-
+         ccfilter           - filter for a particular caption stream CC[1], CC[2] - None or 0 means all caption
+         output_filename    - file name without extension to save decoded captions
+    """
     offscreen_buffer = ''
     onscreen_buffer = ''
     prevcode = None
@@ -684,8 +733,18 @@ def decode_image_list_to_srt(image_list, fixed_line=None, frames_per_second=29.9
     subtitle_count = 1
     accumulate = False  # Do not start collecting captions until we see RCL
 
-    for image in image_list:
-        code, control, _, _ = extract_closed_caption_bytes(image, fixed_line=fixed_line)
+    out_func, f = get_output_function("srt", output_filename)
+
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+
+        code, control, _, _ = data
         if code is not None:
             # PROCESS
             if not control and accumulate:
@@ -702,7 +761,7 @@ def decode_image_list_to_srt(image_list, fixed_line=None, frames_per_second=29.9
                     subtitle_start_frame = frame
                     accumulate = False
                 elif accumulate and onscreen_buffer and match_code_filter(code, 'Erase Displayed Memory', ccfilter):
-                    dump_srt_caption(onscreen_buffer, subtitle_start_frame, frame, frames_per_second, subtitle_count)
+                    dump_srt_caption(onscreen_buffer, subtitle_start_frame, frame, frames_per_second, out_func, subtitle_count)
                     subtitle_count += 1
                     onscreen_buffer = ''
                 elif accumulate and offscreen_buffer and offscreen_buffer[-1:] != '\n':
@@ -710,18 +769,20 @@ def decode_image_list_to_srt(image_list, fixed_line=None, frames_per_second=29.9
         # CLEANUP
         prevcode = code
         frame += 1
-        if delete_image_after:
-            image.unlink()
+    
+    if f is not None:
+        f.close()
 
 
-def decode_captions_to_scc(image_list, fixed_line=None, delete_image_after=True, ccfilter=None):
+def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
         Assumes 29.97 frames per second drop time-code
+         rx                 - input connection for decoded cc data
          image_list         - list of image file paths
-         delete_image_after - delete the image file after we have done processing it
          fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored"""
-
+         ccfilter           - ignored
+         output_filename    - file name without extension to save decoded captions
+    """
     def drop_frame_time_code(frames):
         frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
         frs = frame_number % 30
@@ -730,28 +791,43 @@ def decode_captions_to_scc(image_list, fixed_line=None, delete_image_after=True,
         h = (((frame_number / 30) / 60) / 60) % 24
         return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
 
-    def dump_scc_subtitle(starting_frame, buffer):
-        print('%s\t%s' % (drop_frame_time_code(starting_frame), buffer))
+    def dump_scc_subtitle(starting_frame, buffer, out_func):
+        out_func('%s\t%s' % (drop_frame_time_code(starting_frame), buffer))
+
+    def add_header(out_func):
+        out_func('Scenarist_SCC V1.0\n')
+
+    out_func, f = get_output_function("scc", output_filename)
 
     frame = 0
     start_frame = 0
-    print('Scenarist_SCC V1.0\n')
+    add_header(out_func)
     buff = ''
     prevcode = None
-    for image in image_list:
-        code, control, byte1, byte2 = extract_closed_caption_bytes(image, fixed_line=fixed_line)
+        
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+
+        code, control, byte1, byte2 = data
         if code is not None:
             if code is not None and not buff:
                 start_frame = frame  # Start of a sequence (not empty and no buffer yet)
             if code is not None or buff:
                 buff += '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
             if control and is_end_code(code) and code == prevcode:
-                dump_scc_subtitle(start_frame, buff)
+                dump_scc_subtitle(start_frame, buff, out_func)
                 buff = ''
         frame += 1
         prevcode = code
-        if delete_image_after:
-            image.unlink()
+
+    if f is not None:
+        f.close()
 
 
 def compute_xds_packet_checksum(packet_bytes):
@@ -930,18 +1006,30 @@ def describe_xds_packet(packet_bytes):
     return 'XDS - Empty Packet'
 
 
-def decode_xds_packets(image_list, fixed_line=None, delete_image_after=True, ccfilter=None):
+def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of XDS packets.
-         image_list         - list of image file paths
-         delete_image_after - delete the image file after we have done processing it
+         rx                 - input connection for decoded cc data
          fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored """
+         ccfilter           - ignored
+         output_filename    - file name without extension to save decoded captions
+    """
     frame = 0
     packetbuf = []
     gather_xds_bytes = False
-    for image in image_list:
+
+    out_func, f = get_output_function("xds", output_filename)
+
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+    
         frame += 1
-        code, control, b1, b2 = extract_closed_caption_bytes(image, fixed_line)
+        code, control, b1, b2 = data
         if code is not None:
             if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
                 if b1 <= 0x0e:  # Start of XDS packet'
@@ -950,7 +1038,8 @@ def decode_xds_packets(image_list, fixed_line=None, delete_image_after=True, ccf
                     packetbuf.append((b1, b2))
                 if b1 == 0x0f:  # End of XDS packet
                     gather_xds_bytes = False
-                    print(describe_xds_packet(packetbuf))
+                    out_func(describe_xds_packet(packetbuf))
                     packetbuf = []
-        if delete_image_after:
-            image.unlink()
+    
+    if f is not None:
+        f.close()

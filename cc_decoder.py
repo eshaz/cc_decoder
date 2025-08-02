@@ -82,13 +82,13 @@ import sys
 import tempfile
 import time
 import lib.cc_decode
-from lib.cc_decode import decode_image_list_to_srt, decode_captions_raw, decode_captions_to_scc, decode_captions_debug
+import multiprocessing
+import atexit
+from lib.cc_decode import decode_image_list_to_srt, decode_captions_raw, decode_captions_to_scc, decode_captions_debug, extract_closed_caption_bytes
 from lib.cc_decode import FileImageWrapper, decode_xds_packets, decode_image_list_to_srt_roll
 
 # Defaults - won't work everywehere, that's why we allow it to be manually set
 FFMPEG_LOC = {
-    'win32': os.path.join(os.environ["ProgramFiles"], 'ffmpeg', 'ffmpeg.exe'),
-    'cygwin': os.path.join(os.environ["ProgramFiles"], 'ffmpeg', 'ffmpeg.exe'),
     'linux2': os.path.join(os.path.sep + 'usr', 'local', 'bin', 'ffmpeg'),
     'darwin': os.path.join(os.path.sep + 'usr', 'local', 'bin', 'ffmpeg'),
 }
@@ -120,8 +120,10 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
+    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, ffmpeg_post_scale=None, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
         self.ffmpeg_path = ffmpeg_path or FFMPEG_LOC.get(sys.platform)
+        self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
+        self.ffmpeg_post_scale = "" if ffmpeg_pre_scale is None else "," + ffmpeg_post_scale
         self.temp_dir_path = temp_path or tempfile.gettempdir()
         self.format = ccformat or 'srt'
         self.lines = lines
@@ -153,9 +155,11 @@ class ClosedCaptionFileDecoder(object):
         image_wrapper = image_wrapper or PilImageWrapper
         self.workingdir = tempfile.mkdtemp(dir=self.temp_dir_path)
         tempfile_name_structure = 'ccdecode%07d.tif'
-        ffmpeg_cmd = '%s -i "%s" -vf "scale=720:ih, crop=iw:%d:0:%d" -pix_fmt rgb24 -f image2 "%s"' % \
-                     (self.ffmpeg_path, input_file, start_line + lines, start_line,
-                      os.path.join(self.workingdir, tempfile_name_structure))
+        ffmpeg_cmd = [
+            self.ffmpeg_path, "-i", input_file, 
+            "-vf", f"{self.ffmpeg_pre_scale}scale=720:ih,crop=iw:{start_line + lines}:0:{start_line}{self.ffmpeg_post_scale}", "-pix_fmt", "rgb24", "-f", "image2",
+            os.path.join(self.workingdir, tempfile_name_structure)
+        ]
 
         def next_file_name(file_num):
             return os.path.join(self.workingdir, (tempfile_name_structure % file_num))
@@ -179,13 +183,38 @@ class ClosedCaptionFileDecoder(object):
         os.rmdir(self.workingdir)
         self.workingdir = ''
 
-    def decode(self, filename):
+    def decode(self, filename, output_filename):
         imagewrapper_generator = self.stream_decode_file_list(
             filename, lines=self.lines, start_line=self.start_line)
+        
+        running_decoders = []
+        running_decoders_conns = []
+        formats = self.format.split(",")
 
-        if self.format in self.DECODERS:
-            decoder_func = self.DECODERS.get(self.format)
-            decoder_func(imagewrapper_generator, ccfilter=self.ccfilter)
+        if "srt" in formats and "srtroll" in formats:
+            raise RuntimeError("Cannot specify both 'srt' and 'srtroll'")
+
+        for format in formats:
+            if format in self.DECODERS:
+                decoder_func = self.DECODERS.get(format)
+
+                rx, tx = multiprocessing.Pipe(False)
+                decoder = multiprocessing.Process(None, decoder_func, args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
+                atexit.register(decoder.join)
+                decoder.start()
+                running_decoders.append(decoder)
+                running_decoders_conns.append(tx)
+
+        if len(running_decoders) > 0:
+            for image in imagewrapper_generator:
+                data = extract_closed_caption_bytes(image, fixed_line=None)
+                image.unlink()
+
+                for rx in running_decoders_conns:
+                    rx.send(data)
+
+            for rx in running_decoders_conns:
+                rx.send("DONE")
         else:
             raise RuntimeError('Unknown output format %s, try one of %s' % (format, self.DECODERS.keys()))
 
@@ -196,7 +225,10 @@ def main():
     ffmpeg = FFMPEG_LOC.get(sys.platform, '')
     tempdir = tempfile.gettempdir()
     p.add_argument('videofile', help='Input video file name')
+    p.add_argument('-o', default=None, help='Output subtitle filename without extension (omit to print to stdout)')
     p.add_argument('--ffmpeg', default=ffmpeg, help='Path to a copy of the ffmpeg binary (default %s)' % ffmpeg)
+    p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling')
+    p.add_argument('--ffmpeg_post_scale', default=None, help='FFMpeg video filter options after scaling')
     p.add_argument('--temp', default=tempdir, help='Path to temporary working area (default %s)' % tempdir)
     p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, srtroll or debug (default srt)')
     p.add_argument('--lines', default=3, type=int,
@@ -217,8 +249,8 @@ def main():
     lib.cc_decode.LUMA_THRESHOLD = args.bitlevel
 
     if args.videofile:
-        decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, temp_path=args.temp, ccformat=args.ccformat,
+        decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, ffmpeg_post_scale=args.ffmpeg_post_scale, temp_path=args.temp, ccformat=args.ccformat,
                                            lines=args.lines, start_line=args.start_line, ccfilter=args.ccfilter)
-        decoder.decode(args.videofile)
+        decoder.decode(args.videofile, args.o)
 
 main()
