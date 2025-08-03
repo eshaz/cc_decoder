@@ -157,7 +157,7 @@ class ClosedCaptionFileDecoder(object):
         tempfile_name_structure = 'ccdecode%07d.tif'
         ffmpeg_cmd = [
             self.ffmpeg_path, "-i", input_file, 
-            "-vf", f"{self.ffmpeg_pre_scale}scale=720:ih,crop=iw:{start_line + lines}:0:{start_line}{",interlace=lowpass=off" if self.deinterlaced else ""}", "-pix_fmt", "rgb24", "-f", "image2",
+            "-vf", f"{self.ffmpeg_pre_scale}scale=720:-1:flags=neighbor,crop=iw:{start_line + lines}:0:{start_line}{",interlace=lowpass=off" if self.deinterlaced else ""}", "-pix_fmt", "rgb24", "-f", "image2",
             os.path.join(self.workingdir, tempfile_name_structure)
         ]
 
