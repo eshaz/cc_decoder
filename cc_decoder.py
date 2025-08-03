@@ -252,9 +252,6 @@ def main():
 
     args = p.parse_args()
 
-    # Prime stdout for unicode UTF-8 output
-    sys.stdout.reconfigure(encoding='utf-8')
-
     # Set video level
     lib.cc_decode.LUMA_THRESHOLD = args.bitlevel
 
