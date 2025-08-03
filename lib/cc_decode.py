@@ -46,6 +46,7 @@ __maintainer__ = "Max Smith"
 __email__ = None  # Sorry, I get far too much spam as it is. Track me down at http://www.notonbluray.com
 
 import os
+import re
 
 # Assumes 27 pixel wide 'bit' starting at pixel 280 - assumes 720 pixel wide video (enforced elsewhere)
 # Odd parity on the rightmost bit, we sample central pixels of the bit and average
@@ -394,14 +395,7 @@ XDS_MONTH = {
     0xc : 'Dec',
     }
 
-CC_FILTER_TO_TXT = {
-    1: 'CC1',
-    2: 'CC2',
-    3: 'CC3',
-    4: 'CC4'
-}
-
-
+CC_TRACK_NUMBERS = ['CC1', 'CC2', 'CC3', 'CC4']
 
 lastPreambleOffset = 0  # Global cache last preamble offset
 lastRowFound = 0  # Global, cache the last row we found cc's on
@@ -508,14 +502,6 @@ def is_cc_present(image, row_number=1):
                     break
             return True
     return False
-
-
-def is_control_code(byte1, byte2):
-    return (byte1, byte2) in ALL_CC_CONTROL_CODES
-
-
-def is_end_code(code):
-    return 'End of Caption (flip memory)' in code or 'Erase Displayed Memory' in code
 
 
 def find_and_decode_row(img, fixed_line=None):
@@ -632,147 +618,258 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
     return codes
 
 
-def timestamp(frame_number, fps):
-    """ Returns an SRT format timestamp """
-    seconds = frame_number / fps
-    milliseconds = int((seconds - int(seconds)) * 1000)
-    hours = int(seconds / 3600)
-    minutes = int((seconds - 3600 * hours) / 60)
-    seconds_disp = seconds - (minutes * 60 + hours * 3600)
-    return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
+class CaptionTrack:
+    def __init__(self, cc_track, output_filename, extension):
+        self._cc_track = cc_track
+        self._output_filename = output_filename
+        self._extension = extension
 
+        self.prev_code = None
+        self.mode = "paint_on"
 
-def dump_srt_caption(caption_text, start_frame, end_frame, fps, out_func, subtitle_count=None):
-    """ Display an SRT format closed caption """
-    if subtitle_count is not None:
-        out_func(subtitle_count)  # Required by: https://docs.fileformat.com/video/srt/
-    out_func('%s --> %s\n%s\n' % (timestamp(start_frame, fps), timestamp(end_frame, fps), caption_text))
+        self._buffer_on_screen = []
+        self._buffer_off_screen = []
 
+    def open(self):
+        self.out, self.f = get_output_function(self._cc_track + "." + self._extension, self._output_filename)
 
-def decode_image_list_to_srt_roll(rx, fixed_line=None, frames_per_second=29.97, ccfilter=None, output_filename=None):
-    """ Decode a passed list of images to a stream of SRT subtitles. Assumes Roll-up format closed captions
-         rx                 - input connection for decoded cc data
-         frames_per_second  - how many fps is the passed list of images
-         fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored for now
-         output_filename    - file name without extension to save decoded captions
-    """
-    buffer = ['', '', '', '']
-    buffer_len = 4
-    frame = 0
-    subtitle_start_frame = 0
-    subtitle_count = 1
+    def close(self):
+        self.f.close()
 
-    out_func, f = get_output_function("srt", output_filename)
+    def add_data(self, data, frames):
+        code, control, byte1, byte2 = data
+        if code is not None and not (byte1 == 0 and byte2 == 0):
+            print("processing", data)
+            is_global_code = self._handle_global_control(data, frames)
     
-    while True:
-        try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
-            break
+            # write code
+            if not is_global_code:
+                if self.mode == "pop_on":
+                    self.add_off_screen(data)
+                elif self.mode == "paint_on":
+                    self.add_on_screen(data, frames)
+    
+            self.prev_code = code
 
+    def _handle_global_control(self, data, frames):
+        code, control, byte1, byte2 = data
+        
+        if 'Resume Caption Loading' in code:
+            if code == self.prev_code:
+                self.global_resume_loading(data, frames)
+            self.prev_code = code
+            return True
+        elif 'Resume Direct Captioning' in code:
+            if code == self.prev_code:
+                self.global_resume_direct(data, frames)
+            self.prev_code = code
+            return True
+        elif 'End of Caption (flip memory)' in code:
+            if code == self.prev_code:
+                self.global_flip_buffers(data, frames)
+            self.prev_code = code
+            return True
+        elif 'Erase Non-Displayed Memory' in code:
+            if code == self.prev_code:
+                self.global_erase_non_displayed_memory(data, frames)
+            return True
+        elif 'Erase Displayed Memory' in code:
+            if code == self.prev_code:
+                self.global_erase_displayed_memory(data, frames)
+            return True
+        elif 'Roll-Up Captions' in code or 'Text' in code:
+            print(f"WARN: {code} is not supported")
+            return True
+        else:
+            # not a global code
+            return False
+        
+    def global_resume_loading(self, data, frames):
+        self.mode = "pop_on"
+        
+    def global_resume_direct(self, data, frames):
+        self.mode = "paint_on"
+        
+    def global_flip_buffers(self, data, frames):
+        buffer_off_screen = self._buffer_off_screen
+        self._buffer_off_screen = self._buffer_on_screen
+        self._buffer_on_screen = buffer_off_screen
+    
+    def global_erase_non_displayed_memory(self, data, frames):
+        self._buffer_off_screen = []
+
+    def global_erase_displayed_memory(self, data, frames):
+        self._buffer_on_screen = []
+
+    def add_on_screen(self, data, frames):
+        raise NotImplemented
+
+    def add_off_screen(self, data):
+        raise NotImplemented
+
+class SCCCaptionTrack(CaptionTrack):
+    def __init__(self, cc_track, output_filename):
+        super().__init__(cc_track, output_filename, "scc")
+        self.open()
+    
+    def open(self):
+        super().open()
+        self.out('Scenarist_SCC V1.0\n')
+
+    def global_resume_loading(self, data, frames):
+        super().global_resume_loading(data, frames)
+        self._buffer_off_screen.append(data)
+
+    def global_resume_direct(self, data, frames):
+        super().global_resume_direct(data, frames)
+
+        self._buffer_on_screen.append(data)
+        self._write(self._buffer_on_screen, frames)
+
+    def global_flip_buffers(self, data, frames):
+        super().global_flip_buffers(data, frames)
+
+        self._buffer_on_screen.append(data)
+        self._write(self._buffer_on_screen, frames)
+
+    def global_erase_non_displayed_memory(self, data, frames):
+        super().global_erase_non_displayed_memory(data, frames)
+
+    def global_erase_displayed_memory(self, data, frames):
+        super().global_erase_displayed_memory(data, frames)
+
+        self._write([data], frames) # send clear screen command
+    
+    def add_on_screen(self, data, frames):
+        self._buffer_on_screen.append(data)
+        self._write(self._buffer_on_screen, frames)
+
+    def add_off_screen(self, data):
+        self._buffer_off_screen.append(data)
+
+    def _write(self, data, frames):
+        scc_data = [self._get_subtitle_data(n) for n in data]
+        self.out('%s\t%s' % (self._get_timecode(frames), "".join(scc_data)))
+
+    def _get_timecode(self, frames):
+        frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
+        frs = frame_number % 30
+        s = (frame_number / 30) % 60
+        m = ((frame_number / 30) / 60) % 60
+        h = (((frame_number / 30) / 60) / 60) % 24
+        return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
+    
+    def _get_subtitle_data(self, data):
+        code, control, byte1, byte2 = data
+        return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
+
+class SRTCaptionTrack(CaptionTrack):
+    def __init__(self, cc_track, output_filename):
+        super().__init__(cc_track, output_filename, "srt")
+        self.open()
+        self.subtitle_count = 1
+        self.subtitle_start_frame = 0
+        self.subtitle_end_frame = 0
+        self.fps = 29.97
+
+    def global_resume_loading(self, data, frames):
+        # start a new subtitle entry
+        super().global_resume_loading(data, frames)
+
+    def global_resume_direct(self, data, frames):
+        # start a new subtitle entry
+        super().global_resume_direct(data, frames)
+        self.subtitle_start_frame = frames
+
+    def global_flip_buffers(self, data, frames):
+        super().global_flip_buffers(data, frames)
+        self.subtitle_start_frame = frames
+
+    def global_erase_non_displayed_memory(self, data, frames):
+        # clear out the off screen buffer, no effect on srt
+        super().global_erase_non_displayed_memory(data, frames)
+
+    def global_erase_displayed_memory(self, data, frames):
+        # end the subtitle and write to the screen
+        if len(self._buffer_on_screen) > 0:
+            self._write(self._buffer_on_screen, frames)
+
+        # clear the on screen buffer
+        super().global_erase_displayed_memory(data, frames)
+
+    def add_on_screen(self, data, frames):
+        self._buffer_on_screen.append(data)
+        # write the onscreen buffer to screen
+        self._write(self._buffer_on_screen, frames)
+
+    def add_off_screen(self, data):
+        self._buffer_off_screen.append(data)
+
+    def _write(self, data, frames):
+        self.subtitle_end_frame = frames
+
+        current_row = None
+        caption_text = ""
+        for (code, control, _, _) in self._buffer_on_screen:
+            # add a line break if row advances
+            if control:
+                match = re.search(r'row (?P<row_number>\d+)$', code)
+                if match:
+                    row = int(match.group("row_number"))
+                    if current_row is not None and current_row < row:
+                        caption_text += "\n"
+                    current_row = row
+                elif code.endswith("Carriage Return"):
+                    caption_text += "\n"
+                elif code.endswith("Backspace"):
+                    caption_text = caption_text[0:-1]
+                elif "Tab" in code:
+                    tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
+                    if tab_match:
+                        tab = int(tab_match["tab_offset"])
+                        # not sure if this works in srt
+                        caption_text += "\t" * tab
+            else:
+                caption_text += code
+
+        self.out(self.subtitle_count) # Required by: https://docs.fileformat.com/video/srt/
+        self.out('%s --> %s\n%s\n' % (self._get_timecode(self.subtitle_start_frame), self._get_timecode(self.subtitle_end_frame), caption_text))
+        
+        self.subtitle_count += 1
+
+    def _get_timecode(self, frames):
+        """ Returns an SRT format timestamp """
+        seconds = frames / self.fps
+        milliseconds = int((seconds - int(seconds)) * 1000)
+        hours = int(seconds / 3600)
+        minutes = int((seconds - 3600 * hours) / 60)
+        seconds_disp = seconds - (minutes * 60 + hours * 3600)
+        return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
+    
+class CaptionTrackFactory():
+    def __init__(self, track_class, output_filename):
+        self.current_track = None
+
+        self._tracks = {}
+        self._output_filename = output_filename
+        self._track_class = track_class
+
+    def set_current_track(self, data):
         code, control, _, _ = data
-        if code is not None:
-        # PROCESS:
-            if not control:
-                buffer[0] += code  # Assumed to be text
-            elif control and code != prevcode:
-                if code in ROLL_UP_LEN:
-                    subtitle_start_frame = frame
-                    if buffer_len != ROLL_UP_LEN[code]:
-                        buffer_len = ROLL_UP_LEN[code]
-                        buffer = [''] * buffer_len
-                    else:  #Probably the start of a comamnd sequence
-                        pass
-                elif code.endswith('Erase Displayed Memory'):
-                    dump_srt_caption('\n'.join(reversed(buffer)), subtitle_start_frame, frame, frames_per_second, out_func, subtitle_count)
-                    subtitle_count += 1
-                    subtitle_start_frame = frame
-                    buffer = [''] * buffer_len
-                elif code.endswith('Carriage Return'):
-                    dump_srt_caption('\n'.join(reversed(buffer)), subtitle_start_frame, frame, frames_per_second, out_func, subtitle_count)
-                    subtitle_start_frame = frame
-                    subtitle_count += 1
-                    # Roll-up subs
-                    if buffer_len >= 4:
-                        buffer[3] = buffer[2]
-                    if buffer_len >= 3:
-                        buffer[2] = buffer[1]
-                    buffer[1] = buffer[0]
-                    buffer[0] = ''
+        if control:
+            cc_track = code[:3]
 
-        prevcode = code
-        frame += 1
-    
-    if f is not None:
-        f.close()
+            if cc_track in CC_TRACK_NUMBERS:
+                # create a new track and file if it is a new stream
+                if cc_track not in self._tracks:        
+                    self._tracks[cc_track] = self._track_class(cc_track, self._output_filename)
+                
+                # set the current stream
+                self.current_track = self._tracks[cc_track]
 
-def match_code_filter(code, txt_to_match, cc_filter):
-    if txt_to_match in code:
-        if cc_filter:
-            return CC_FILTER_TO_TXT[cc_filter] in code
-        return True
-
-def decode_image_list_to_srt(rx, fixed_line=None, frames_per_second=29.97, ccfilter=None, output_filename=None):
-    """ Decode a passed list of images to a stream of SRT subtitles. Assumes Pop-on format closed captions
-         rx                 - input connection for decoded cc data
-         image_list         - list of image file paths
-         frames_per_second  - how many fps is the passed list of images
-         fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - filter for a particular caption stream CC[1], CC[2] - None or 0 means all caption
-         output_filename    - file name without extension to save decoded captions
-    """
-    offscreen_buffer = ''
-    onscreen_buffer = ''
-    prevcode = None
-    frame = 0
-    subtitle_start_frame = 0
-    subtitle_count = 1
-    accumulate = False  # Do not start collecting captions until we see RCL
-
-    out_func, f = get_output_function("srt", output_filename)
-
-    while True:
-        try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
-            break
-
-        code, control, _, _ = data
-        if code is not None:
-            # PROCESS
-            if not control and accumulate:
-                offscreen_buffer += code  # Must be text
-            elif control and code != prevcode:
-                if 'Resume Caption Loading' in code:
-                    if match_code_filter(code, 'Resume Caption Loading', ccfilter):
-                        accumulate = True  # Start collection captions, as we match ccfilter
-                    else:
-                        accumulate = False  # We are interleaving with another caption stream
-                elif match_code_filter(code, 'End of Caption', ccfilter):
-                    onscreen_buffer = offscreen_buffer
-                    offscreen_buffer = ''
-                    subtitle_start_frame = frame
-                    accumulate = False
-                elif accumulate and onscreen_buffer and match_code_filter(code, 'Erase Displayed Memory', ccfilter):
-                    dump_srt_caption(onscreen_buffer, subtitle_start_frame, frame, frames_per_second, out_func, subtitle_count)
-                    subtitle_count += 1
-                    onscreen_buffer = ''
-                elif accumulate and offscreen_buffer and offscreen_buffer[-1:] != '\n':
-                    offscreen_buffer += '\n'  # Some random command code. Assume it's just a newline
-        # CLEANUP
-        prevcode = code
-        frame += 1
-    
-    if f is not None:
-        f.close()
-
+    def close_tracks(self):
+        for track in self._tracks.values():
+            track.close()
 
 def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
@@ -783,28 +880,9 @@ def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=N
          ccfilter           - ignored
          output_filename    - file name without extension to save decoded captions
     """
-    def drop_frame_time_code(frames):
-        frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
-        frs = frame_number % 30
-        s = (frame_number / 30) % 60
-        m = ((frame_number / 30) / 60) % 60
-        h = (((frame_number / 30) / 60) / 60) % 24
-        return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
-
-    def dump_scc_subtitle(starting_frame, buffer, out_func):
-        out_func('%s\t%s' % (drop_frame_time_code(starting_frame), buffer))
-
-    def add_header(out_func):
-        out_func('Scenarist_SCC V1.0\n')
-
-    out_func, f = get_output_function("scc", output_filename)
-
-    frame = 0
-    start_frame = 0
-    add_header(out_func)
-    buff = ''
-    prevcode = None
+    track_factory = CaptionTrackFactory(SCCCaptionTrack, output_filename)
         
+    frame = 0        
     while True:
         try:
             data = rx.recv()
@@ -814,20 +892,45 @@ def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=N
         if data == "DONE":
             break
 
-        code, control, byte1, byte2 = data
-        if code is not None:
-            if code is not None and not buff:
-                start_frame = frame  # Start of a sequence (not empty and no buffer yet)
-            if code is not None or buff:
-                buff += '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
-            if control and is_end_code(code) and code == prevcode:
-                dump_scc_subtitle(start_frame, buff, out_func)
-                buff = ''
-        frame += 1
-        prevcode = code
+        track_factory.set_current_track(data)
 
-    if f is not None:
-        f.close()
+        if track_factory.current_track is not None:
+            track_factory.current_track.add_data(data, frame)
+
+        frame += 1
+
+    track_factory.close_tracks()
+
+
+def decode_image_list_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
+    """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
+        Assumes 29.97 frames per second drop time-code
+         rx                 - input connection for decoded cc data
+         image_list         - list of image file paths
+         fixed_line         - check a particular line for cc-signal (and no others)
+         ccfilter           - ignored
+         output_filename    - file name without extension to save decoded captions
+    """
+    track_factory = CaptionTrackFactory(SRTCaptionTrack, output_filename)
+        
+    frame = 0        
+    while True:
+        try:
+            data = rx.recv()
+        except (KeyboardInterrupt, EOFError):
+            data = "DONE"
+            pass
+        if data == "DONE":
+            break
+
+        track_factory.set_current_track(data)
+
+        if track_factory.current_track is not None:
+            track_factory.current_track.add_data(data, frame)
+
+        frame += 1
+
+    track_factory.close_tracks()
 
 
 def compute_xds_packet_checksum(packet_bytes):
