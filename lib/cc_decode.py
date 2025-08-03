@@ -396,7 +396,7 @@ XDS_MONTH = {
     0xc : 'Dec',
     }
 
-CC_TRACK_NUMBERS = ['CC1', 'CC2', 'CC3', 'CC4']
+CC_SUPPORTED_CHANNELS = ['CC1', 'CC2']
 
 lastPreambleOffset = 0  # Global cache last preamble offset
 lastRowFound = 0  # Global, cache the last row we found cc's on
@@ -505,20 +505,35 @@ def is_cc_present(image, row_number=1):
     return False
 
 
-def find_and_decode_row(img, fixed_line=None):
+def find_and_decode_fields(img, fixed_line=None):
     """ Search for a closed caption row in the passed image, if one is present decode and return the bytes present """
     global lastRowFound
-    if lastRowFound >= img.height:
+
+    # move the search up to search both fields, eventually reach 0 if nothing is found
+    lastRowFound -= 1
+
+    if lastRowFound > img.height - 2:
         lastRowFound = 0  # Protect against streams suddenly losing a few rows
+    if lastRowFound < 0:
+        lastRowFound = 0
+
     row_target = fixed_line or lastRowFound
-    if not(is_cc_present(img, row_number=row_target) or fixed_line is not None):
-        for row in range(0, img.height-1):
-            if is_cc_present(img, row_number=row):
-                lastRowFound = row
-                return decode_row(img, row_number=lastRowFound)
-        return None, None
-    else:
-        return decode_row(img, row_number=row_target)
+    fields_found = {
+        0: (None, None),
+        1: (None, None)
+    }
+
+    start = row_target if is_cc_present(img, row_number=row_target) else 0
+    field_num = 0
+    for row in range(start, img.height-1):
+        if is_cc_present(img, row_number=row):
+            lastRowFound = row
+            fields_found[field_num] = decode_row(img, row_number=row)
+            field_num += 1
+        if field_num == 2:
+            break
+    
+    return fields_found
 
 @memoize
 def check_parity(byte):
@@ -531,29 +546,34 @@ def check_parity(byte):
 
 def extract_closed_caption_bytes(img, fixed_line=None):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
-    raw_byte1, raw_byte2 = find_and_decode_row(img, fixed_line)
+    decoded_fields = {
+        0: (None, False, None, None),
+        1: (None, False, None, None)
+    }
+    for field_num, (raw_byte1, raw_byte2) in find_and_decode_fields(img, fixed_line).items():
+        if raw_byte1 is None and raw_byte2 is None:
+            continue
+    
+        byte1, byte1_parity = check_parity(raw_byte1)
+        byte2, byte2_parity = check_parity(raw_byte2)
+        control = (byte1, byte2) in ALL_CC_CONTROL_CODES
+    
+        # check parity
+        # https://www.law.cornell.edu/cfr/text/47/79.101
+        if not byte2_parity:
+            if control:
+                continue
+            else:
+                byte2 = 0x7f
+    
+        if not byte1_parity:
+            control = False
+            byte1 = 0x7f
 
-    if raw_byte1 is None and raw_byte2 is None:
-        return None, False, None, None
+        code = decode_byte_pair(byte1, byte2)
+        decoded_fields[field_num] = (code, control, byte1, byte2)
 
-    byte1, byte1_parity = check_parity(raw_byte1)
-    byte2, byte2_parity = check_parity(raw_byte2)
-    control = (byte1, byte2) in ALL_CC_CONTROL_CODES
-
-    # check parity
-    # https://www.law.cornell.edu/cfr/text/47/79.101
-    if not byte2_parity:
-        if control:
-            return None, False, None, None
-        else:
-            byte2 = 0x7f
-
-    if not byte1_parity:
-        control = False
-        byte1 = 0x7f
-            
-    code = decode_byte_pair(byte1, byte2)
-    return code, control, byte1, byte2
+    return decoded_fields
     
 def get_output_function(extension, output_filename):
     if output_filename is not None:
@@ -580,14 +600,15 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
 
     while True:
         try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+            field0 = rows[0]
+            field1 = rows[1]
+        except:
             break
 
-        code, control, b1, b2 = data
+        code, control, b1, b2 = field0
         if code is None:
             out_func('%i skip - no preamble' % frame)
         else:
@@ -619,17 +640,18 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
     codes = []
 
     out_func, f = get_output_function("captions.debug", output_filename)
-    
+
     while True:
         try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+            field0 = rows[0]
+            field1 = rows[1]
+        except:
             break
 
-        code, control, b1, b2 = data
+        code, control, b1, b2 = field0
         if code is None:
             out_func('%i skip - no preamble' % frame)
         else:
@@ -651,7 +673,7 @@ class CaptionTrack:
 
         self.prev_code = None
         self.prev_byte = None
-        self.mode = "paint_on"
+        self.mode = "pop_on"
 
         self._buffer_on_screen = []
         self._buffer_off_screen = []
@@ -901,7 +923,7 @@ class CaptionTrackFactory():
         if control:
             cc_track = code[:3]
 
-            if cc_track in CC_TRACK_NUMBERS:
+            if cc_track in CC_SUPPORTED_CHANNELS:
                 # create a new track and file if it is a new stream
                 if cc_track not in self._tracks:        
                     self._tracks[cc_track] = self._track_class(cc_track, self._output_filename)
@@ -927,17 +949,18 @@ def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=N
     frame = 0        
     while True:
         try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+            # skip XDS and CC3, CC4
+            field0 = rows[0]
+        except:
             break
 
-        track_factory.set_current_track(data)
-
+        track_factory.set_current_track(field0)
+    
         if track_factory.current_track is not None:
-            track_factory.current_track.add_data(data, frame)
+            track_factory.current_track.add_data(field0, frame)
 
         frame += 1
 
@@ -958,18 +981,19 @@ def decode_image_list_to_srt(rx, fixed_line=None, ccfilter=None, output_filename
     frame = 0        
     while True:
         try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+            # skip XDS and CC3, CC4
+            field0 = rows[0]
+        except:
             break
 
-        track_factory.set_current_track(data)
-
+        track_factory.set_current_track(field0)
+    
         if track_factory.current_track is not None:
-            track_factory.current_track.add_data(data, frame)
-
+            track_factory.current_track.add_data(field0, frame)
+    
         frame += 1
 
     track_factory.close_tracks()
@@ -1019,13 +1043,29 @@ def decode_xds_time_of_day(packet_bytes):
     tape_delayed = 'T' if pbytes[3] & 0x10 else 'S'
     leap_day = 'L' if pbytes[2] & 0x20 else 'A'
     day_of_month = ( pbytes[2] - 0x40 )  # TODO: There is some possible interaction with leapday here, ignore for now
-    month = XDS_MONTH[pbytes[3] & 0xF]
-    day_of_week = XDS_DAY_OF_WEEK[pbytes[4]]
+
+    month_key = pbytes[3] & 0xF
+    month = XDS_MONTH[month_key] if month_key in XDS_MONTH else "--"
+    
+    day_of_week_key = pbytes[4]
+    day_of_week = XDS_DAY_OF_WEEK[day_of_week_key] if day_of_week_key in XDS_DAY_OF_WEEK else "--"
+
     year = 1990 + ( pbytes[5] - 0x40 )
     minutes = pbytes[0] - 0x40
     hours = pbytes[1] & 0x1F
     return f'TM {hours:0>2}:{minutes:0>2}{dst} {zero_seconds}{tape_delayed}{leap_day} {month} {day_of_month:0>2} {year} {day_of_week}'
 
+def decode_xds_local_time_zone(packet_bytes):
+    """ Decode the Local Time Zone packets """
+    _assert_len(packet_bytes, 4)
+    pbytes = [b for bytepair in packet_bytes for b in bytepair]  # Flatten the nested list
+    # daylight savings or standard time
+    dst = 'D' if (pbytes[1] & 0x20) else 'S'
+    dst_add = 0x20 if (pbytes[1] & 0x20) else 0
+
+    # time zone hour
+    tz = 24 - pbytes[0] + dst_add + 0x40
+    return f'TZ {tz}{dst}'
 
 def decode_xds_content_advisory(pbytes):
     """ Decode content advisory packet, returning a string describing the rating """
@@ -1059,8 +1099,8 @@ def decode_xds_content_advisory(pbytes):
 def describe_xds_packet(packet_bytes):
     """ Given a set of bytes representing an XDS packet, describe it """
     if packet_bytes:
-        #if not compute_xds_packet_checksum(packet_bytes):
-        #    return 'XDS Rejected Packet - Incorrect Checksum'
+        if not compute_xds_packet_checksum(packet_bytes):
+            return 'XDS Rejected Packet - Incorrect Checksum'
         b1, b2 = packet_bytes.pop(0)
         if b1 <= 0x02 and b2 <= 0x03:  # TODO continues
             pref = ['Current', 'Next Program'][b1-1]
@@ -1139,6 +1179,8 @@ def describe_xds_packet(packet_bytes):
         if b1 == 0x07:  # Misc
             if b2 == 0x01:  # Time of day
                 return f'XDS Time of day (UTC): {decode_xds_time_of_day(packet_bytes)}'
+            if b2 == 0x04:  # Local Time Zone
+                return f'XDS Local Time Zone: {decode_xds_local_time_zone(packet_bytes)}'
 
 
         if b1 == 0x09:  # Public service
@@ -1166,13 +1208,18 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
 
     while True:
         try:
-            data = rx.recv()
-        except (KeyboardInterrupt, EOFError):
-            data = "DONE"
-            pass
-        if data == "DONE":
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+            field0 = rows[0]
+            field1 = rows[1]
+        except:
             break
-    
+
+        # try CC3, CC4 first, otherwise try CC1, CC2
+        data = field0 if field1[0] is None else field1
+
+        # skip CC1, CC2
         frame += 1
         code, control, b1, b2 = data
         if code is not None:
@@ -1183,7 +1230,11 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
                     packetbuf.append((b1, b2))
                 if b1 == 0x0f:  # End of XDS packet
                     gather_xds_bytes = False
-                    out_func(describe_xds_packet(packetbuf))
+                    try:
+                        out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
+                    except KeyError as e:
+                        print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
+                        pass
                     packetbuf = []
     
     if f is not None:

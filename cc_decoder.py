@@ -84,6 +84,7 @@ import time
 import lib.cc_decode
 import multiprocessing
 import atexit
+import signal
 from lib.cc_decode import decode_image_list_to_srt, decode_captions_raw, decode_captions_to_scc, decode_captions_debug, extract_closed_caption_bytes
 from lib.cc_decode import FileImageWrapper, decode_xds_packets
 
@@ -191,13 +192,21 @@ class ClosedCaptionFileDecoder(object):
         running_decoders_conns = []
         formats = self.format.split(",")
 
+        def stop_decode(*args):
+            nonlocal imagewrapper_generator
+            try:
+                imagewrapper_generator.close()
+            except:
+                pass
+
+        signal.signal(signal.SIGINT, stop_decode)
+
         for format in formats:
             if format in self.DECODERS:
                 decoder_func = self.DECODERS.get(format)
 
                 rx, tx = multiprocessing.Pipe(False)
-                decoder = multiprocessing.Process(None, decoder_func, args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
-                atexit.register(decoder.join)
+                decoder = multiprocessing.Process(None, decoder_func, name=f"{format}_decoder", args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
@@ -209,22 +218,26 @@ class ClosedCaptionFileDecoder(object):
         if len(running_decoders) > 0:
             print("Decoding captions...", file=sys.stderr)
             for image in imagewrapper_generator:
-                data = extract_closed_caption_bytes(image, fixed_line=None)
-                frame_count += 1
-                if data[0] != None and data[0] != "":
+                rows = extract_closed_caption_bytes(image, fixed_line=None)
+                field0 = rows[0]
+                if field0[0] != None and field0[0] != "":
                     print(" " * len(message), end="\r", file=sys.stderr)
-                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {"True " if data[1] else "False"} | Byte1: {hex(data[2])} | Byte2: {hex(data[3])} | {data[0]} "
+                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {"True " if field0[1] else "False"} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
                     caption_count += 1
                     print(message, end="\r", file=sys.stderr)
 
+                for conn in running_decoders_conns:
+                    conn.send(rows)
+                
                 image.unlink()
+                frame_count += 1
 
-                for rx in running_decoders_conns:
-                    rx.send(data)
-
-            for rx in running_decoders_conns:
-                rx.send("DONE")
-
+            for conn in running_decoders_conns:
+                conn.send("DONE")
+    
+            for decoder in running_decoders:
+                decoder.join()
+        
             print("", file=sys.stderr)
             print("Done!", file=sys.stderr)
         else:
