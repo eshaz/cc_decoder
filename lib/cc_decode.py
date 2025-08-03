@@ -440,15 +440,15 @@ class FileImageWrapper(BaseImageWrapper):
 
 
 @memoize
-def decode_byte_pair(byte1, byte2):
+def decode_byte_pair(byte1, byte2, default_unicode=True):
     """ Decode a pair of bytes"""
     controlcode = (byte1, byte2)
     if controlcode in ALL_CC_CONTROL_CODES:
         return ALL_CC_CONTROL_CODES.get(controlcode)
     if controlcode in ALL_SPECIAL_CHARS:
         return ALL_SPECIAL_CHARS.get(controlcode)
-    return '' + CC_TABLE.get(byte1, '?b1(%02x)' % (byte1)) + \
-           CC_TABLE.get(byte2, '?b2(%02x)' % (byte2))
+    return '' + CC_TABLE.get(byte1, '?b1(%02x)' % (byte1) if default_unicode else "") + \
+           CC_TABLE.get(byte2, '?b2(%02x)' % (byte2) if default_unicode else "")
 
 
 def decode_byte(image, bit_locations, sample_size, row_number, offset=0):
@@ -649,6 +649,7 @@ class CaptionTrack:
         self._extension = extension
 
         self.prev_code = None
+        self.prev_byte = None
         self.mode = "paint_on"
 
         self._buffer_on_screen = []
@@ -725,6 +726,22 @@ class CaptionTrack:
     def global_erase_displayed_memory(self, data, frames):
         self._buffer_on_screen = []
 
+    def filter_repeating_bad_data(self, data):
+        code, control, byte1, byte2 = data
+
+        if self.prev_byte is None:
+            self.prev_byte = byte1
+
+        if byte1 == 0x7f and (self.prev_byte == byte1 or self.prev_byte == 0):
+            byte1 = 0
+        self.prev_byte = byte1
+
+        if byte2 == 0x7f and (self.prev_byte == byte2 or self.prev_byte == 0):
+            byte2 = 0
+        self.prev_byte = byte2
+
+        return decode_byte_pair(byte1, byte2, False), control, byte1, byte2
+
     def add_on_screen(self, data, frames):
         raise NotImplemented
 
@@ -781,7 +798,7 @@ class SCCCaptionTrack(CaptionTrack):
         return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
     
     def _get_subtitle_data(self, data):
-        code, control, byte1, byte2 = data
+        _, _, byte1, byte2 = self.filter_repeating_bad_data(data)
         return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
 
 class SRTCaptionTrack(CaptionTrack):
@@ -823,7 +840,7 @@ class SRTCaptionTrack(CaptionTrack):
 
         current_row = None
         caption_text = ""
-        for (code, control, _, _) in self._buffer_on_screen:
+        for (code, control, byte1, byte2) in self._buffer_on_screen:
             # add a line break if row advances
             if control:
                 match = re.search(r'row (?P<row_number>\d+)$', code)
@@ -843,6 +860,7 @@ class SRTCaptionTrack(CaptionTrack):
                         # not sure if this works in srt
                         caption_text += "\t" * tab
             else:
+                code, _, _, _ = self.filter_repeating_bad_data((code, control, byte1, byte2))
                 caption_text += code
 
         self.out(self.subtitle_count) # Required by: https://docs.fileformat.com/video/srt/
