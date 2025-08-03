@@ -119,10 +119,10 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, ffmpeg_post_scale=None, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
+    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
         self.ffmpeg_path = ffmpeg_path or FFMPEG_LOC.get(sys.platform)
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
-        self.ffmpeg_post_scale = "" if ffmpeg_pre_scale is None else "," + ffmpeg_post_scale
+        self.deinterlaced = deinterlaced
         self.temp_dir_path = temp_path or tempfile.gettempdir()
         self.format = ccformat or 'srt'
         self.lines = lines
@@ -139,7 +139,7 @@ class ClosedCaptionFileDecoder(object):
         if self.workingdir:
             shutil.rmtree(self.workingdir)
 
-    def stream_decode_file_list(self, input_file, start_line=0, lines=5, image_wrapper=None):
+    def stream_decode_file_list(self, input_file, start_line=0, lines=10, image_wrapper=None):
         """ Returns a generator of image objects based on ffmpeg decoding the top 10 lines of the passed input_file.
             Run ffmpeg in a subprocess generating tiffs of the video frame until ffmpeg finishes and we run out of
             frames.
@@ -156,7 +156,7 @@ class ClosedCaptionFileDecoder(object):
         tempfile_name_structure = 'ccdecode%07d.tif'
         ffmpeg_cmd = [
             self.ffmpeg_path, "-i", input_file, 
-            "-vf", f"{self.ffmpeg_pre_scale}scale=720:ih,crop=iw:{start_line + lines}:0:{start_line}{self.ffmpeg_post_scale}", "-pix_fmt", "rgb24", "-f", "image2",
+            "-vf", f"{self.ffmpeg_pre_scale}scale=720:ih,crop=iw:{start_line + lines}:0:{start_line}{",interlace=lowpass=off" if self.deinterlaced else ""}", "-pix_fmt", "rgb24", "-f", "image2",
             os.path.join(self.workingdir, tempfile_name_structure)
         ]
 
@@ -202,9 +202,21 @@ class ClosedCaptionFileDecoder(object):
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
 
+        message = ""
+        caption_count = 0
+        frame_count = 0
+
         if len(running_decoders) > 0:
+            print("Decoding captions...", file=sys.stderr)
             for image in imagewrapper_generator:
                 data = extract_closed_caption_bytes(image, fixed_line=None)
+                frame_count += 1
+                if data[0] != None and data[0] != "":
+                    print(" " * len(message), end="\r", file=sys.stderr)
+                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {"True " if data[1] else "False"} | Byte1: {hex(data[2])} | Byte2: {hex(data[3])} | {data[0]} "
+                    caption_count += 1
+                    print(message, end="\r", file=sys.stderr)
+
                 image.unlink()
 
                 for rx in running_decoders_conns:
@@ -212,6 +224,9 @@ class ClosedCaptionFileDecoder(object):
 
             for rx in running_decoders_conns:
                 rx.send("DONE")
+
+            print("", file=sys.stderr)
+            print("Done!", file=sys.stderr)
         else:
             raise RuntimeError('Unknown output format %s, try one of %s' % (format, self.DECODERS.keys()))
 
@@ -221,15 +236,15 @@ def main():
 
     ffmpeg = FFMPEG_LOC.get(sys.platform, '')
     tempdir = tempfile.gettempdir()
-    p.add_argument('videofile', help='Input video file name')
+    p.add_argument('videofile', help='Input video file name. Should be: 720 pixels wide, 29.97 fps NTSC interlaced. See `--ffmpeg_pre_scale` and `--ffmpeg_post_scale` if needing to transform the video file to these specifications.')
     p.add_argument('-o', default=None, help='Output subtitle filename without extension (omit to print to stdout)')
     p.add_argument('--ffmpeg', default=ffmpeg, help='Path to a copy of the ffmpeg binary (default %s)' % ffmpeg)
-    p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling')
-    p.add_argument('--ffmpeg_post_scale', default=None, help='FFMpeg video filter options after scaling')
+    p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling. Useful if additional scaling should happen before the video is scaled to 720 width.')
+    p.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is de-interlaced')
     p.add_argument('--temp', default=tempdir, help='Path to temporary working area (default %s)' % tempdir)
     p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, raw or debug (default srt)')
-    p.add_argument('--lines', default=3, type=int,
-        help='Number of lines to search for CC in the video, starting at the start line (default 3)')
+    p.add_argument('--lines', default=10, type=int,
+        help='Number of lines to search for CC in the video, starting at the start line (default 10)')
     p.add_argument('--start_line', default=0, type=int, help='Start at a particular line 0=topmost line')
     p.add_argument('--bitlevel', default=80, type=int,
         help='The R+G+B/3 level that ccdecode reads as "1". 97 according to spec (50 IRE +/- 12 = 38 IRE),' +
@@ -244,7 +259,7 @@ def main():
     lib.cc_decode.LUMA_THRESHOLD = args.bitlevel
 
     if args.videofile:
-        decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, ffmpeg_post_scale=args.ffmpeg_post_scale, temp_path=args.temp, ccformat=args.ccformat,
+        decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, deinterlaced=args.deinterlaced, temp_path=args.temp, ccformat=args.ccformat,
                                            lines=args.lines, start_line=args.start_line)
         decoder.decode(args.videofile, args.o)
 

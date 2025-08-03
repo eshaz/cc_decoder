@@ -47,6 +47,7 @@ __email__ = None  # Sorry, I get far too much spam as it is. Track me down at ht
 
 import os
 import re
+import sys
 
 # Assumes 27 pixel wide 'bit' starting at pixel 280 - assumes 720 pixel wide video (enforced elsewhere)
 # Odd parity on the rightmost bit, we sample central pixels of the bit and average
@@ -664,7 +665,6 @@ class CaptionTrack:
     def add_data(self, data, frames):
         code, control, byte1, byte2 = data
         if code is not None and not (byte1 == 0 and byte2 == 0):
-            print("processing", data)
             is_global_code = self._handle_global_control(data, frames)
     
             # write code
@@ -703,7 +703,7 @@ class CaptionTrack:
                 self.global_erase_displayed_memory(data, frames)
             return True
         elif 'Roll-Up Captions' in code or 'Text' in code:
-            print(f"WARN: {code} is not supported")
+            print(f"WARN: {code} is not supported", file=sys.stderr)
             return True
         else:
             # not a global code
@@ -840,26 +840,37 @@ class SRTCaptionTrack(CaptionTrack):
 
         current_row = None
         caption_text = ""
+        unknown_control_code = False
         for (code, control, byte1, byte2) in self._buffer_on_screen:
             # add a line break if row advances
             if control:
                 match = re.search(r'row (?P<row_number>\d+)$', code)
                 if match:
+                    unknown_control_code = False
                     row = int(match.group("row_number"))
                     if current_row is not None and current_row < row:
                         caption_text += "\n"
                     current_row = row
                 elif code.endswith("Carriage Return"):
+                    unknown_control_code = False
                     caption_text += "\n"
                 elif code.endswith("Backspace"):
+                    unknown_control_code = False
                     caption_text = caption_text[0:-1]
                 elif "Tab" in code:
+                    unknown_control_code = False
                     tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
                     if tab_match:
                         tab = int(tab_match["tab_offset"])
                         # not sure if this works in srt
                         caption_text += "\t" * tab
+                # unknown control code, do one space for any repeated unknown control codes
+                else:
+                    if not unknown_control_code:
+                        caption_text += " "
+                    unknown_control_code = True
             else:
+                unknown_control_code = False
                 code, _, _, _ = self.filter_repeating_bad_data((code, control, byte1, byte2))
                 caption_text += code
 
