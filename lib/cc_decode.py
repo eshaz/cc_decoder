@@ -461,7 +461,7 @@ def decode_byte(image, bit_locations, sample_size, row_number, offset=0):
         return sum(image.get_pixel_luma(i + offset, row_number) for i in range(x, x + sample_size)) / sample_size
 
     b = [pixel_avg(col) > LUMA_THRESHOLD for col in bit_locations]
-    return b[0] + b[1] * 2 + b[2] * 4 + b[3] * 8 + b[4] * 16 + b[5] * 32 + b[6] * 64  # TODO parity
+    return b[0] + b[1] * 2 + b[2] * 4 + b[3] * 8 + b[4] * 16 + b[5] * 32 + b[6] * 64  + b[7] * 128
 
 
 def decode_row(image, sample_size=3, row_number=1, offset=0):
@@ -519,16 +519,40 @@ def find_and_decode_row(img, fixed_line=None):
     else:
         return decode_row(img, row_number=row_target)
 
+@memoize
+def check_parity(byte):
+    total_ones = bin(byte).count('1')
+
+    if total_ones % 2 == 1:
+        return byte & 0x7f, True
+    else:
+        return byte & 0x7f, False
 
 def extract_closed_caption_bytes(img, fixed_line=None):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
-    byte1, byte2 = find_and_decode_row(img, fixed_line)
-    if byte1 is None and byte2 is None:
+    raw_byte1, raw_byte2 = find_and_decode_row(img, fixed_line)
+
+    if raw_byte1 is None and raw_byte2 is None:
         return None, False, None, None
-    else:
-        code = decode_byte_pair(byte1, byte2)
-        control = (byte1, byte2) in ALL_CC_CONTROL_CODES
-        return code, control, byte1, byte2
+
+    byte1, byte1_parity = check_parity(raw_byte1)
+    byte2, byte2_parity = check_parity(raw_byte2)
+    control = (byte1, byte2) in ALL_CC_CONTROL_CODES
+
+    # check parity
+    # https://www.law.cornell.edu/cfr/text/47/79.101
+    if not byte2_parity:
+        if control:
+            return None, False, None, None
+        else:
+            byte2 = 0x7f
+
+    if not byte1_parity:
+        control = False
+        byte1 = 0x7f
+            
+    code = decode_byte_pair(byte1, byte2)
+    return code, control, byte1, byte2
     
 def get_output_function(extension, output_filename):
     if output_filename is not None:
@@ -655,26 +679,26 @@ class CaptionTrack:
         code, control, byte1, byte2 = data
         
         if 'Resume Caption Loading' in code:
-            if code == self.prev_code:
+            if code != self.prev_code:
                 self.global_resume_loading(data, frames)
             self.prev_code = code
             return True
         elif 'Resume Direct Captioning' in code:
-            if code == self.prev_code:
+            if code != self.prev_code:
                 self.global_resume_direct(data, frames)
             self.prev_code = code
             return True
         elif 'End of Caption (flip memory)' in code:
-            if code == self.prev_code:
+            if code != self.prev_code:
                 self.global_flip_buffers(data, frames)
             self.prev_code = code
             return True
         elif 'Erase Non-Displayed Memory' in code:
-            if code == self.prev_code:
+            if code != self.prev_code:
                 self.global_erase_non_displayed_memory(data, frames)
             return True
         elif 'Erase Displayed Memory' in code:
-            if code == self.prev_code:
+            if code != self.prev_code:
                 self.global_erase_displayed_memory(data, frames)
             return True
         elif 'Roll-Up Captions' in code or 'Text' in code:
@@ -732,9 +756,6 @@ class SCCCaptionTrack(CaptionTrack):
         self._buffer_on_screen.append(data)
         self._write(self._buffer_on_screen, frames)
 
-    def global_erase_non_displayed_memory(self, data, frames):
-        super().global_erase_non_displayed_memory(data, frames)
-
     def global_erase_displayed_memory(self, data, frames):
         super().global_erase_displayed_memory(data, frames)
 
@@ -772,10 +793,6 @@ class SRTCaptionTrack(CaptionTrack):
         self.subtitle_end_frame = 0
         self.fps = 29.97
 
-    def global_resume_loading(self, data, frames):
-        # start a new subtitle entry
-        super().global_resume_loading(data, frames)
-
     def global_resume_direct(self, data, frames):
         # start a new subtitle entry
         super().global_resume_direct(data, frames)
@@ -784,10 +801,6 @@ class SRTCaptionTrack(CaptionTrack):
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
         self.subtitle_start_frame = frames
-
-    def global_erase_non_displayed_memory(self, data, frames):
-        # clear out the off screen buffer, no effect on srt
-        super().global_erase_non_displayed_memory(data, frames)
 
     def global_erase_displayed_memory(self, data, frames):
         # end the subtitle and write to the screen
