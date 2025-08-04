@@ -439,12 +439,15 @@ class FileImageWrapper(BaseImageWrapper):
         self.image = None
         os.unlink(self.file_name)
 
+@memoize
+def is_control(byte1, byte2):
+    return (byte1, byte2) in ALL_CC_CONTROL_CODES
 
 @memoize
-def decode_byte_pair(byte1, byte2, default_unicode=True):
+def decode_byte_pair(control, byte1, byte2, default_unicode=True):
     """ Decode a pair of bytes"""
     controlcode = (byte1, byte2)
-    if controlcode in ALL_CC_CONTROL_CODES:
+    if control:
         return ALL_CC_CONTROL_CODES.get(controlcode)
     if controlcode in ALL_SPECIAL_CHARS:
         return ALL_SPECIAL_CHARS.get(controlcode)
@@ -546,9 +549,10 @@ def check_parity(byte):
 
 def extract_closed_caption_bytes(img, fixed_line=None):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
+    # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
     decoded_fields = {
-        0: (None, False, None, None),
-        1: (None, False, None, None)
+        0: (None, False, None, None, None, None),
+        1: (None, False, None, None, None, None)
     }
     for field_num, (raw_byte1, raw_byte2) in find_and_decode_fields(img, fixed_line).items():
         if raw_byte1 is None and raw_byte2 is None:
@@ -558,20 +562,20 @@ def extract_closed_caption_bytes(img, fixed_line=None):
         byte2, byte2_parity = check_parity(raw_byte2)
         control = (byte1, byte2) in ALL_CC_CONTROL_CODES
     
-        # check parity
+        # handle parity errors
         # https://www.law.cornell.edu/cfr/text/47/79.101
         if not byte2_parity:
             if control:
                 continue
             else:
                 byte2 = 0x7f
-    
+
         if not byte1_parity:
-            control = False
+            control = False # treat this as a print character when parity fails
             byte1 = 0x7f
 
-        code = decode_byte_pair(byte1, byte2)
-        decoded_fields[field_num] = (code, control, byte1, byte2)
+        code = decode_byte_pair(control, byte1, byte2)
+        decoded_fields[field_num] = (code, control, byte1, byte1_parity, byte2, byte2_parity)
 
     return decoded_fields
     
@@ -672,7 +676,6 @@ class CaptionTrack:
         self._extension = extension
 
         self.prev_code = None
-        self.prev_byte = None
         self.mode = "pop_on"
 
         self._buffer_on_screen = []
@@ -685,7 +688,7 @@ class CaptionTrack:
         self.f.close()
 
     def add_data(self, data, frames):
-        code, control, byte1, byte2 = data
+        code, _, byte1, _, byte2, _ = data
         if code is not None and not (byte1 == 0 and byte2 == 0):
             is_global_code = self._handle_global_control(data, frames)
     
@@ -699,8 +702,11 @@ class CaptionTrack:
             self.prev_code = code
 
     def _handle_global_control(self, data, frames):
-        code, control, byte1, byte2 = data
+        code, _, _, byte1_parity, _, byte2_parity = data
         
+        if not (byte1_parity or byte2_parity):
+            # ignore global control status when parity issues
+            return False
         if 'Resume Caption Loading' in code:
             if code != self.prev_code:
                 self.global_resume_loading(data, frames)
@@ -747,22 +753,6 @@ class CaptionTrack:
 
     def global_erase_displayed_memory(self, data, frames):
         self._buffer_on_screen = []
-
-    def filter_repeating_bad_data(self, data):
-        code, control, byte1, byte2 = data
-
-        if self.prev_byte is None:
-            self.prev_byte = byte1
-
-        if byte1 == 0x7f and (self.prev_byte == byte1 or self.prev_byte == 0):
-            byte1 = 0
-        self.prev_byte = byte1
-
-        if byte2 == 0x7f and (self.prev_byte == byte2 or self.prev_byte == 0):
-            byte2 = 0
-        self.prev_byte = byte2
-
-        return decode_byte_pair(byte1, byte2, False), control, byte1, byte2
 
     def add_on_screen(self, data, frames):
         raise NotImplemented
@@ -820,7 +810,7 @@ class SCCCaptionTrack(CaptionTrack):
         return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
     
     def _get_subtitle_data(self, data):
-        _, _, byte1, byte2 = self.filter_repeating_bad_data(data)
+        _, _, byte1, _, byte2, _ = data
         return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
 
 class SRTCaptionTrack(CaptionTrack):
@@ -830,6 +820,7 @@ class SRTCaptionTrack(CaptionTrack):
         self.subtitle_count = 1
         self.subtitle_start_frame = 0
         self.subtitle_end_frame = 0
+        self.prev_char = None
         self.fps = 29.97
 
     def global_resume_direct(self, data, frames):
@@ -857,44 +848,59 @@ class SRTCaptionTrack(CaptionTrack):
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
 
+    def dedupe_bad_data_from_text(self, code):
+        if self.prev_char == None:
+            self.prev_char = code
+            return code
+        
+        if self.prev_char == '■' and code == '■':
+            return ''
+        
+        self.prev_char = code
+        return code
+
     def _write(self, data, frames):
         self.subtitle_end_frame = frames
 
         current_row = None
         caption_text = ""
         unknown_control_code = False
-        for (code, control, byte1, byte2) in self._buffer_on_screen:
+        for (code, control, byte1, byte1_parity, byte2, byte2_parity) in self._buffer_on_screen:
             # add a line break if row advances
             if control:
-                match = re.search(r'row (?P<row_number>\d+)$', code)
-                if match:
-                    unknown_control_code = False
-                    row = int(match.group("row_number"))
-                    if current_row is not None and current_row < row:
+                # ignore control codes with bad parity
+                if byte1_parity and byte2_parity:
+                    match = re.search(r'row (?P<row_number>\d+)$', code)
+                    if match:
+                        unknown_control_code = False
+                        row = int(match.group("row_number"))
+                        if current_row is not None and current_row < row:
+                            caption_text += "\n"
+                        current_row = row
+                    elif code.endswith("Carriage Return"):
+                        unknown_control_code = False
                         caption_text += "\n"
-                    current_row = row
-                elif code.endswith("Carriage Return"):
-                    unknown_control_code = False
-                    caption_text += "\n"
-                elif code.endswith("Backspace"):
-                    unknown_control_code = False
-                    caption_text = caption_text[0:-1]
-                elif "Tab" in code:
-                    unknown_control_code = False
-                    tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
-                    if tab_match:
-                        tab = int(tab_match["tab_offset"])
-                        # not sure if this works in srt
-                        caption_text += "\t" * tab
-                # unknown control code, do one space for any repeated unknown control codes
-                else:
-                    if not unknown_control_code:
-                        caption_text += " "
-                    unknown_control_code = True
+                    elif code.endswith("Backspace"):
+                        unknown_control_code = False
+                        caption_text = caption_text[0:-1]
+                    elif "Tab" in code:
+                        unknown_control_code = False
+                        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
+                        if tab_match:
+                            tab = int(tab_match["tab_offset"])
+                            caption_text += " " * tab
+                    # unknown control code or, do one space for any repeated unknown control codes
+                    else:
+                        if not unknown_control_code:
+                            caption_text += " "
+                        unknown_control_code = True
             else:
                 unknown_control_code = False
-                code, _, _, _ = self.filter_repeating_bad_data((code, control, byte1, byte2))
-                caption_text += code
+                # get only a printable code (no byte values)
+                code = decode_byte_pair(False, byte1, byte2, False)
+                if code is not None:
+                    for char in str(code):
+                       caption_text += self.dedupe_bad_data_from_text(char)
 
         self.out(self.subtitle_count) # Required by: https://docs.fileformat.com/video/srt/
         self.out('%s --> %s\n%s\n' % (self._get_timecode(self.subtitle_start_frame), self._get_timecode(self.subtitle_end_frame), caption_text))
@@ -919,8 +925,8 @@ class CaptionTrackFactory():
         self._track_class = track_class
 
     def set_current_track(self, data):
-        code, control, _, _ = data
-        if control:
+        code, control, _, byte1_parity, _, byte2_parity = data
+        if control and byte1_parity and byte2_parity:
             cc_track = code[:3]
 
             if cc_track in CC_SUPPORTED_CHANNELS:
@@ -1023,7 +1029,8 @@ def decode_xds_string(pbytes):
         strbyte1, strbyte2 = pbytes.pop(0)
         if strbyte1 == 0x0f:
             break
-        xds_string += decode_byte_pair(strbyte1, strbyte2)
+        control = is_control(strbyte1, strbyte2)
+        xds_string += decode_byte_pair(control, strbyte1, strbyte2)
     return xds_string
 
 
@@ -1221,7 +1228,7 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
 
         # skip CC1, CC2
         frame += 1
-        code, control, b1, b2 = data
+        code, control, b1, b1_parity, b2, b2_parity = data
         if code is not None:
             if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
                 if b1 <= 0x0e:  # Start of XDS packet'
