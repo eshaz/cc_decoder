@@ -157,7 +157,7 @@ class ClosedCaptionFileDecoder(object):
         tempfile_name_structure = 'ccdecode%07d.tif'
         ffmpeg_cmd = [
             self.ffmpeg_path, "-i", input_file, 
-            "-vf", f"{self.ffmpeg_pre_scale}scale=720:-1:flags=neighbor,crop=iw:{start_line + lines}:0:{start_line}{",interlace=lowpass=off" if self.deinterlaced else ""}", "-pix_fmt", "rgb24", "-f", "image2",
+            "-vf", f"{self.ffmpeg_pre_scale}scale=720:-1:flags=neighbor,crop=iw:{start_line + lines}:0:{start_line}{',interlace=lowpass=off' if self.deinterlaced else ''}", "-pix_fmt", "rgb24", "-f", "image2",
             os.path.join(self.workingdir, tempfile_name_structure)
         ]
 
@@ -222,7 +222,7 @@ class ClosedCaptionFileDecoder(object):
                 field0 = rows[0]
                 if field0[0] != None and field0[0] != "":
                     print(" " * len(message), end="\r", file=sys.stderr)
-                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {"True " if field0[1] else "False"} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
+                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {'True ' if field0[1] else 'False'} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
                     caption_count += 1
                     print(message, end="\r", file=sys.stderr)
 
