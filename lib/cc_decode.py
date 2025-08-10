@@ -655,7 +655,7 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
         except:
             break
 
-        code, control, b1, b2 = field0
+        code, control, b1, b2, b1_parity, b2_parity = field0
         if code is None:
             out_func('%i skip - no preamble' % frame)
         else:
