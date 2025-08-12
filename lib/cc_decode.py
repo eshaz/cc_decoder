@@ -212,9 +212,9 @@ CC2_BACKGROUND_CHARS.update( { (0x1F, 0xAD) : 'Background transparent',
                                (0x1F, 0x2F) : 'Foreground Black Underline', } )  # Also CC4
 
 ROLL_UP_LEN = {
-    'CC1 Roll-Up Captions-2 Rows': 2,
-    'CC1 Roll-Up Captions-3 Rows': 3,
-    'CC1 Roll-Up Captions-4 Rows': 4,
+    0x25: 2, # Roll-Up Captions-2 Rows
+    0x26: 3, # Roll-Up Captions-3 Rows
+    0x27: 4, # Roll-Up Captions-4 Rows
 }
 
 MID_ROW_CODES = {
@@ -680,6 +680,7 @@ class CaptionTrack:
 
         self._buffer_on_screen = []
         self._buffer_off_screen = []
+        self._roll_up_buffer = []
 
     def open(self):
         self.out, self.f = get_output_function(self._cc_track + "." + self._extension, self._output_filename)
@@ -698,6 +699,8 @@ class CaptionTrack:
                     self.add_off_screen(data)
                 elif self.mode == "paint_on":
                     self.add_on_screen(data, frames)
+                elif self.mode == "roll_up":
+                    self.add_on_screen_roll_up(data, frames)
     
             self.prev_code = code
 
@@ -730,7 +733,10 @@ class CaptionTrack:
             if code != self.prev_code:
                 self.global_erase_displayed_memory(data, frames)
             return True
-        elif 'Roll-Up Captions' in code or 'Text' in code:
+        elif 'Roll-Up Captions' in code:
+            if code != self.prev_code:
+                self.global_start_roll_up(data, frames)
+        elif 'Text' in code:
             print(f"WARN: {code} is not supported", file=sys.stderr)
             return True
         else:
@@ -742,6 +748,14 @@ class CaptionTrack:
         
     def global_resume_direct(self, data, frames):
         self.mode = "paint_on"
+
+    def global_start_roll_up(self, data, frames):
+        code, _, _, _, byte2, _ = data
+
+        self.mode = "roll_up"
+        self.roll_up_length = ROLL_UP_LEN[byte2]
+        self.global_erase_displayed_memory(data, frames)
+        self.global_erase_non_displayed_memory(data, frames)
         
     def global_flip_buffers(self, data, frames):
         buffer_off_screen = self._buffer_off_screen
@@ -752,12 +766,18 @@ class CaptionTrack:
         self._buffer_off_screen = []
 
     def global_erase_displayed_memory(self, data, frames):
-        self._buffer_on_screen = []
+        if self.mode == "roll_up":
+            self._roll_up_buffer = []
+        else:
+            self._buffer_on_screen = []
 
     def add_on_screen(self, data, frames):
         raise NotImplemented
 
     def add_off_screen(self, data):
+        raise NotImplemented
+    
+    def add_on_screen_roll_up(self, data, frames):
         raise NotImplemented
 
 class SCCCaptionTrack(CaptionTrack):
@@ -779,6 +799,10 @@ class SCCCaptionTrack(CaptionTrack):
         self._buffer_on_screen.append(data)
         self._write(self._buffer_on_screen, frames)
 
+    def global_start_roll_up(self, data, frames):
+        super().global_start_roll_up(data, frames)
+        self._write([data], frames)
+        
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
 
@@ -796,6 +820,9 @@ class SCCCaptionTrack(CaptionTrack):
 
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
+
+    def add_on_screen_roll_up(self, data, frames):
+        self._write([data], frames)
 
     def _write(self, data, frames):
         scc_data = [self._get_subtitle_data(n) for n in data]
@@ -827,6 +854,11 @@ class SRTCaptionTrack(CaptionTrack):
         # start a new subtitle entry
         super().global_resume_direct(data, frames)
         self.subtitle_start_frame = frames
+        self._roll_up_buffer = []
+
+    def global_start_roll_up(self, data, frames):
+        super().global_start_roll_up(data, frames)
+        self.subtitle_start_frame = frames
 
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
@@ -834,8 +866,12 @@ class SRTCaptionTrack(CaptionTrack):
 
     def global_erase_displayed_memory(self, data, frames):
         # end the subtitle and write to the screen
-        if len(self._buffer_on_screen) > 0:
-            self._write(self._buffer_on_screen, frames)
+        if self.mode == "roll_up":
+            if len(self._roll_up_buffer) > 0:
+                self._write(self._roll_up_buffer, frames)
+        else:
+            if len(self._buffer_on_screen) > 0:
+                self._write(self._buffer_on_screen, frames)
 
         # clear the on screen buffer
         super().global_erase_displayed_memory(data, frames)
@@ -847,6 +883,25 @@ class SRTCaptionTrack(CaptionTrack):
 
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
+
+    def add_on_screen_roll_up(self, data, frames):
+        self._roll_up_buffer.append(data)
+
+        #line_breaks = []
+        #for i in range(len(self._roll_up_buffer)):
+        #    if self._roll_up_buffer[i][0].endswith("Carriage Return"):
+        #        line_breaks.append(i)
+        #
+        # roll-up the captions
+        #print(len(line_breaks), self.roll_up_length)
+        #if len(line_breaks) > self.roll_up_length:
+        #    # keep the last n rows
+        #    lines_to_remove = line_breaks[-(self.roll_up_length)]
+        #    # roll-up and away the oldest row
+        #    self._roll_up_buffer = self._roll_up_buffer[lines_to_remove+1:]
+        #    # trigger a subtitle update
+        #    self._write(self._roll_up_buffer, frames)
+        #    self.subtitle_start_frame = frames
 
     def dedupe_bad_data_from_text(self, code):
         if self.prev_char == None:
@@ -865,7 +920,7 @@ class SRTCaptionTrack(CaptionTrack):
         current_row = None
         caption_text = ""
         unknown_control_code = False
-        for (code, control, byte1, byte1_parity, byte2, byte2_parity) in self._buffer_on_screen:
+        for (code, control, byte1, byte1_parity, byte2, byte2_parity) in data:
             # add a line break if row advances
             if control:
                 # ignore control codes with bad parity
