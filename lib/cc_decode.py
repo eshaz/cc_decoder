@@ -396,7 +396,7 @@ XDS_MONTH = {
     0xc : 'Dec',
     }
 
-CC_SUPPORTED_CHANNELS = ['CC1', 'CC2']
+CC_SUPPORTED_CHANNELS = ['CC1', 'CC2', 'CC3', 'CC4']
 
 lastPreambleOffset = 0  # Global cache last preamble offset
 lastRowFound = 0  # Global, cache the last row we found cc's on
@@ -1013,15 +1013,18 @@ def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=N
             rows = rx.recv()
             if rows == "DONE":
                 break
-            # skip XDS and CC3, CC4
             field0 = rows[0]
+            field1 = rows[1]
         except:
             break
 
         track_factory.set_current_track(field0)
-    
         if track_factory.current_track is not None:
             track_factory.current_track.add_data(field0, frame)
+
+        track_factory.set_current_track(field1)
+        if track_factory.current_track is not None:
+            track_factory.current_track.add_data(field1, frame)
 
         frame += 1
 
@@ -1045,15 +1048,18 @@ def decode_image_list_to_srt(rx, fixed_line=None, ccfilter=None, output_filename
             rows = rx.recv()
             if rows == "DONE":
                 break
-            # skip XDS and CC3, CC4
             field0 = rows[0]
+            field1 = rows[1]
         except:
             break
 
         track_factory.set_current_track(field0)
-    
         if track_factory.current_track is not None:
             track_factory.current_track.add_data(field0, frame)
+
+        track_factory.set_current_track(field1)
+        if track_factory.current_track is not None:
+            track_factory.current_track.add_data(field1, frame)
     
         frame += 1
 
@@ -1266,7 +1272,8 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
     packetbuf = []
     gather_xds_bytes = False
 
-    out_func, f = get_output_function("xds", output_filename)
+    out_func = None
+    f = None
 
     while True:
         try:
@@ -1293,6 +1300,9 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
                 if b1 == 0x0f:  # End of XDS packet
                     gather_xds_bytes = False
                     try:
+                        if out_func == None:
+                            out_func, f = get_output_function("xds", output_filename)
+
                         out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
                     except KeyError as e:
                         print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
