@@ -1,7 +1,7 @@
 from unittest import TestCase
 from lib.cc_decode import decode_byte_pair, decode_byte, BYTE1_LOCATIONS, find_and_decode_row, \
     compute_xds_packet_checksum, extract_closed_caption_bytes, _assert_len, decode_xds_string, decode_xds_minutes_hours, \
-    describe_xds_packet, decode_captions_debug, decode_image_list_to_srt, decode_captions_to_scc, decode_xds_packets, \
+    describe_xds_packet, decode_captions_debug, decode_to_srt, decode_to_scc, decode_xds_packets, \
     decode_captions_raw, decode_row, decode_xds_content_advisory, BYTE2_LOCATIONS, SYNC_SIGNAL_LOCATIONS_HIGH, \
     ALL_SPECIAL_CHARS, CC_TABLE, decode_xds_time_of_day
 from random import randint
@@ -123,7 +123,7 @@ class TestDecoding(TestCase):
                 [0x57, 0x45], [0x0f, 0x4b]]
 
     def test_exercise_decoders(self):
-        decoder_methods = [decode_captions_debug, decode_image_list_to_srt, decode_captions_to_scc, decode_xds_packets,
+        decoder_methods = [decode_captions_debug, decode_to_srt, decode_to_scc, decode_xds_packets,
                            decode_captions_raw]
 
         test_image_values = [[[0x20, 0x20], [0x20, 0x20], [0x20, 0x20]]]
@@ -186,12 +186,12 @@ class TestDecoding(TestCase):
         decode_xds_packets(RANDOM_MOCK_IMAGE_SEQUENCE)
 
     def test_decode_scc(self):
-        decode_captions_to_scc(MOCK_IMAGE_SEQUENCE)
-        decode_captions_to_scc(RANDOM_MOCK_IMAGE_SEQUENCE)
+        decode_to_scc(MOCK_IMAGE_SEQUENCE)
+        decode_to_scc(RANDOM_MOCK_IMAGE_SEQUENCE)
 
     def test_decode_raw(self):
-        decode_image_list_to_srt(MOCK_IMAGE_SEQUENCE)
-        decode_image_list_to_srt(RANDOM_MOCK_IMAGE_SEQUENCE)
+        decode_to_srt(MOCK_IMAGE_SEQUENCE)
+        decode_to_srt(RANDOM_MOCK_IMAGE_SEQUENCE)
 
     def test_decode_captions_debug(self):
         decode_captions_debug(MOCK_IMAGE_SEQUENCE)

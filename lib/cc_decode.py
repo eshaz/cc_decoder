@@ -394,9 +394,21 @@ XDS_MONTH = {
     0xa : 'Oct',
     0xb : 'Nov',
     0xc : 'Dec',
-    }
+}
 
-CC_SUPPORTED_CHANNELS = ['CC1', 'CC2', 'CC3', 'CC4']
+CC_CHANNEL_TO_FIELD = {
+    'CC1': 0,
+    'CC2': 0,
+    'CC3': 1,
+    'CC4': 1,
+}
+
+CC_CHANNEL_TO_TEXT_CHANNEL = {
+    'CC1': 'T1',
+    'CC2': 'T2',
+    'CC3': 'T3',
+    'CC4': 'T4',
+}
 
 lastPreambleOffset = 0  # Global cache last preamble offset
 lastRowFound = 0  # Global, cache the last row we found cc's on
@@ -607,25 +619,25 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
             rows = rx.recv()
             if rows == "DONE":
                 break
-            field0 = rows[0]
-            field1 = rows[1]
         except:
             break
 
-        code, control, b1, b2 = field0
-        if code is None:
-            out_func('%i skip - no preamble' % frame)
-        else:
-            if code and not control:
-                if merge_text:
-                    buff += code
-                else:
-                    out_func('%i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
-            elif buff:
-                out_func('%i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, buff))
-                buff = ''
-            if control:
-                out_func('%i (%i,%i) - [%02x, %02x] - %s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
+        for field_idx in range(len(rows)):
+            code, control, b1, b2, b1_parity, b2_parity = rows[field_idx]
+
+            if code is None:
+                out_func('%i %i skip - no preamble' % (frame, field_idx))
+            else:
+                if code and not control:
+                    if merge_text:
+                        buff += code
+                    else:
+                        out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, code))
+                elif buff:
+                    out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, buff))
+                    buff = ''
+                if control:
+                    out_func('%i %i (%i,%i) - [%02x, %02x] - %s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, code))
         frame += 1
 
     if f is not None:
@@ -650,17 +662,16 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
             rows = rx.recv()
             if rows == "DONE":
                 break
-            field0 = rows[0]
-            field1 = rows[1]
         except:
             break
 
-        code, control, b1, b2, b1_parity, b2_parity = field0
-        if code is None:
-            out_func('%i skip - no preamble' % frame)
-        else:
-            out_func('%i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, lastPreambleOffset, lastRowFound, b1, b2, code))
-            codes.append([b1, b2])
+        for field_idx in range(len(rows)):
+           code, control, b1, b2, b1_parity, b2_parity = rows[field_idx]
+           if code is None:
+               out_func('%i %i skip - no preamble' % (frame, field_idx))
+           else:
+               out_func('%i %i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, code))
+               codes.append([b1, b2])
         frame += 1
     
     if f is not None:
@@ -672,6 +683,7 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
 class CaptionTrack:
     def __init__(self, cc_track, output_filename, extension):
         self._cc_track = cc_track
+        self._field_number = CC_CHANNEL_TO_FIELD[self._cc_track]
         self._output_filename = output_filename
         self._extension = extension
 
@@ -681,12 +693,22 @@ class CaptionTrack:
         self._buffer_on_screen = []
         self._buffer_off_screen = []
         self._roll_up_buffer = []
+        self._text_buffer = []
+
+        self.f = None
+        self.f_text = None
 
     def open(self):
         self.out, self.f = get_output_function(self._cc_track + "." + self._extension, self._output_filename)
 
+    def open_text(self):
+        self.out_text, self.f_text = get_output_function(CC_CHANNEL_TO_TEXT_CHANNEL[self._cc_track] + "." + self._extension, self._output_filename)
+
     def close(self):
-        self.f.close()
+        if self.f is not None:
+            self.f.close()
+        if self.f_text is not None:
+            self.f_text.close()
 
     def add_data(self, data, frames):
         code, _, byte1, _, byte2, _ = data
@@ -701,11 +723,16 @@ class CaptionTrack:
                     self.add_on_screen(data, frames)
                 elif self.mode == "roll_up":
                     self.add_on_screen_roll_up(data, frames)
+                elif self.mode == "text":
+                    self.add_text(data, frames)
+                elif self.mode == "xds":
+                    # ignore
+                    pass
     
             self.prev_code = code
 
     def _handle_global_control(self, data, frames):
-        code, _, _, byte1_parity, _, byte2_parity = data
+        code, _, b1, byte1_parity, _, byte2_parity = data
         
         if not (byte1_parity or byte2_parity):
             # ignore global control status when parity issues
@@ -736,8 +763,17 @@ class CaptionTrack:
         elif 'Roll-Up Captions' in code:
             if code != self.prev_code:
                 self.global_start_roll_up(data, frames)
-        elif 'Text' in code:
-            print(f"WARN: {code} is not supported", file=sys.stderr)
+        elif 'Resume Text Display' in code:
+            if code != self.prev_code:
+                self.global_start_text_mode(data, frames)
+            return True
+        elif 'Text Restart' in code:
+            if code != self.prev_code:
+                self.global_start_text_mode(data, frames)
+                self.global_text_reset(data, frames)
+            return True
+        elif b1 != 0 and b1 <= 0x0e and self._field_number == 1: # XDS mode on second field only, ignore for caption writing
+            self.global_start_xds_mode(data, frames)
             return True
         else:
             # not a global code
@@ -756,6 +792,17 @@ class CaptionTrack:
         self.roll_up_length = ROLL_UP_LEN[byte2]
         self.global_erase_displayed_memory(data, frames)
         self.global_erase_non_displayed_memory(data, frames)
+
+    def global_start_text_mode(self, data, frames):
+        self.mode = "text"
+        if self.f_text is None:
+            self.open_text()
+
+    def global_start_xds_mode(self, data, frames):
+        self.mode = "xds"
+
+    def global_text_reset(self, data, frames):
+        raise NotImplemented
         
     def global_flip_buffers(self, data, frames):
         buffer_off_screen = self._buffer_off_screen
@@ -779,6 +826,9 @@ class CaptionTrack:
     
     def add_on_screen_roll_up(self, data, frames):
         raise NotImplemented
+    
+    def add_text(self, data, frames):
+        raise NotImplemented
 
 class SCCCaptionTrack(CaptionTrack):
     def __init__(self, cc_track, output_filename):
@@ -797,36 +847,57 @@ class SCCCaptionTrack(CaptionTrack):
         super().global_resume_direct(data, frames)
 
         self._buffer_on_screen.append(data)
-        self._write(self._buffer_on_screen, frames)
+        self._write(self.out, self._buffer_on_screen, frames)
 
     def global_start_roll_up(self, data, frames):
         super().global_start_roll_up(data, frames)
-        self._write([data], frames)
+        self._write(self.out, [data], frames)
+
+    def global_start_text_mode(self, data, frames):
+        super().global_start_text_mode(data, frames)
+        self._write(self.out_text, [data], frames)
+
+    def global_start_xds_mode(self, data, frames):
+        super().global_start_xds_mode(data, frames)
+
+    def global_text_reset(self, data, frames):
+        self.add_text(self, data, frames)
+
+        self._write(self.out_text, self._text_buffer, frames)
+        self._text_buffer = []
         
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
 
         self._buffer_on_screen.append(data)
-        self._write(self._buffer_on_screen, frames)
+        self._write(self.out, self._buffer_on_screen, frames)
 
     def global_erase_displayed_memory(self, data, frames):
         super().global_erase_displayed_memory(data, frames)
 
-        self._write([data], frames) # send clear screen command
+        self._write(self.out, [data], frames) # send clear screen command
     
     def add_on_screen(self, data, frames):
         self._buffer_on_screen.append(data)
-        self._write(self._buffer_on_screen, frames)
+        self._write(self.out, self._buffer_on_screen, frames)
 
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
 
     def add_on_screen_roll_up(self, data, frames):
-        self._write([data], frames)
+        self._write(self.out, [data], frames)
 
-    def _write(self, data, frames):
+    def add_text(self, data, frames):
+        code, _, _, _, _, _ = data
+
+        self._text_buffer.append(data)
+        if 'Carriage Return' in code:
+            self._write(self.out_text, self._text_buffer, frames)
+            self._text_buffer = []
+
+    def _write(self, out_func, data, frames):
         scc_data = [self._get_subtitle_data(n) for n in data]
-        self.out('%s\t%s' % (self._get_timecode(frames), "".join(scc_data)))
+        out_func('%s\t%s' % (self._get_timecode(frames), "".join(scc_data)))
 
     def _get_timecode(self, frames):
         frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
@@ -839,15 +910,113 @@ class SCCCaptionTrack(CaptionTrack):
     def _get_subtitle_data(self, data):
         _, _, byte1, _, byte2, _ = data
         return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
+    
+class TextCaptionTrack(CaptionTrack):
+    def __init__(self, cc_track, output_filename, extension = "txt"):
+        super().__init__(cc_track, output_filename, extension)
 
-class SRTCaptionTrack(CaptionTrack):
+        self.prev_char = None
+
+    def global_text_reset(self, data, frames):
+        self._write(self._text_buffer)
+        self._text_buffer = []
+
+        self.global_start_text_mode(self, data, frames)
+    
+    def dedupe_bad_data_from_text(self, code):
+        if self.prev_char == None:
+            self.prev_char = code
+            return code
+        
+        if self.prev_char == '■' and code == '■':
+            return ''
+        
+        self.prev_char = code
+        return code
+
+    def get_caption_text(self, data):
+        current_row = None
+        caption_text = ""
+        has_printable = False
+        
+        for (code, control, byte1, byte1_parity, byte2, byte2_parity) in data:
+            # add a line break if row advances
+            if control:
+                # ignore control codes with bad parity
+                if byte1_parity and byte2_parity:
+                    match = re.search(r'row (?P<row_number>\d+)$', code)
+                    if match:
+                        row = int(match.group("row_number"))
+                        if current_row is not None and current_row < row:
+                            caption_text += "\n"
+                        current_row = row
+                    elif code.endswith("Carriage Return"):
+                        caption_text += "\n"
+                    elif code.endswith("Backspace"):
+                        caption_text = caption_text[0:-1]
+                    elif "Tab" in code:
+                        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
+                        if tab_match:
+                            tab = int(tab_match["tab_offset"])
+                            tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
+                            caption_text += " " * tab
+                    elif "Indent" in code:
+                        intend_match = re.search(r'Indent (?P<indent_offset>\d+)$', code)
+                        if intend_match:
+                            indent = int(intend_match["indent_offset"])
+                            caption_text += " " * indent
+                    else:
+                        # probably don't add anything here if the code is not printable
+                        pass
+            else:
+                # get only a printable code (no byte values)
+                code = decode_byte_pair(False, byte1, byte2, False)
+                if code is not None:
+                    for char in str(code):
+                       if char != " ":
+                           has_printable = True
+                       caption_text += self.dedupe_bad_data_from_text(char)
+
+        return caption_text, has_printable
+    
+    # only enable text for .txt format
+    def add_text(self, data, frames):
+        code, _, _, _, _, _ = data
+
+        if 'Carriage Return' in code and code == self.prev_code:
+            self._write(self._text_buffer)
+            self._text_buffer = []
+        else:
+            self._text_buffer.append(data)
+
+    def _write(self, data):
+        caption_text, has_printable = self.get_caption_text(data)
+        if has_printable:
+            # remove the last linebreak since one will be added by print
+            self.out_text(caption_text.rstrip('\n'))
+
+    def add_on_screen(self, data, frames):
+        pass
+
+    def add_off_screen(self, data):
+        pass
+    
+    def add_on_screen_roll_up(self, data, frames):
+        pass
+    
+class SRTCaptionTrack(TextCaptionTrack):
     def __init__(self, cc_track, output_filename):
         super().__init__(cc_track, output_filename, "srt")
         self.open()
+
         self.subtitle_count = 1
         self.subtitle_start_frame = 0
         self.subtitle_end_frame = 0
-        self.prev_char = None
+
+        self.text_count = 1
+        self.text_start_frame = 0
+        self.text_end_frame = 0
+
         self.fps = 29.97
 
     def global_resume_direct(self, data, frames):
@@ -860,6 +1029,17 @@ class SRTCaptionTrack(CaptionTrack):
         super().global_start_roll_up(data, frames)
         self.subtitle_start_frame = frames
 
+    def global_start_text_mode(self, data, frames):
+        super().global_start_text_mode(data, frames)
+        if self.text_start_frame == 0:
+            self.text_start_frame = frames
+
+    def global_text_reset(self, data, frames):
+        self._write_text(self._text_buffer, frames)
+        self._text_buffer = []
+
+        self.global_start_text_mode(self, data, frames)
+
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
         self.subtitle_start_frame = frames
@@ -868,10 +1048,10 @@ class SRTCaptionTrack(CaptionTrack):
         # end the subtitle and write to the screen
         if self.mode == "roll_up":
             if len(self._roll_up_buffer) > 0:
-                self._write(self._roll_up_buffer, frames)
+                self._write_caption(self._roll_up_buffer, frames)
         else:
             if len(self._buffer_on_screen) > 0:
-                self._write(self._buffer_on_screen, frames)
+                self._write_caption(self._buffer_on_screen, frames)
 
         # clear the on screen buffer
         super().global_erase_displayed_memory(data, frames)
@@ -879,7 +1059,7 @@ class SRTCaptionTrack(CaptionTrack):
     def add_on_screen(self, data, frames):
         self._buffer_on_screen.append(data)
         # write the onscreen buffer to screen
-        self._write(self._buffer_on_screen, frames)
+        self._write_caption(self._buffer_on_screen, frames)
 
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
@@ -903,64 +1083,50 @@ class SRTCaptionTrack(CaptionTrack):
         #    self._write(self._roll_up_buffer, frames)
         #    self.subtitle_start_frame = frames
 
-    def dedupe_bad_data_from_text(self, code):
-        if self.prev_char == None:
-            self.prev_char = code
-            return code
-        
-        if self.prev_char == '■' and code == '■':
-            return ''
-        
-        self.prev_char = code
-        return code
+    def add_text(self, data, frames):
+        code, _, _, _, _, _ = data
 
-    def _write(self, data, frames):
+        if 'Carriage Return' in code and code == self.prev_code:
+            self._write_text(self._text_buffer, frames)
+            self._text_buffer = []
+        else:
+            self._text_buffer.append(data)
+    
+    def _write_text(self, data, frames):
+        self.text_end_frame = frames
+        wrote_text = self._write(
+            self.out_text,
+            self.text_start_frame,
+            self.text_end_frame,
+            self.text_count,
+            False,
+            data
+        )
+        if wrote_text:
+           self.text_start_frame = frames
+           self.text_count += 1
+
+    def _write_caption(self, data, frames):
         self.subtitle_end_frame = frames
-
-        current_row = None
-        caption_text = ""
-        unknown_control_code = False
-        for (code, control, byte1, byte1_parity, byte2, byte2_parity) in data:
-            # add a line break if row advances
-            if control:
-                # ignore control codes with bad parity
-                if byte1_parity and byte2_parity:
-                    match = re.search(r'row (?P<row_number>\d+)$', code)
-                    if match:
-                        unknown_control_code = False
-                        row = int(match.group("row_number"))
-                        if current_row is not None and current_row < row:
-                            caption_text += "\n"
-                        current_row = row
-                    elif code.endswith("Carriage Return"):
-                        unknown_control_code = False
-                        caption_text += "\n"
-                    elif code.endswith("Backspace"):
-                        unknown_control_code = False
-                        caption_text = caption_text[0:-1]
-                    elif "Tab" in code:
-                        unknown_control_code = False
-                        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
-                        if tab_match:
-                            tab = int(tab_match["tab_offset"])
-                            caption_text += " " * tab
-                    # unknown control code or, do one space for any repeated unknown control codes
-                    else:
-                        if not unknown_control_code:
-                            caption_text += " "
-                        unknown_control_code = True
-            else:
-                unknown_control_code = False
-                # get only a printable code (no byte values)
-                code = decode_byte_pair(False, byte1, byte2, False)
-                if code is not None:
-                    for char in str(code):
-                       caption_text += self.dedupe_bad_data_from_text(char)
-
-        self.out(self.subtitle_count) # Required by: https://docs.fileformat.com/video/srt/
-        self.out('%s --> %s\n%s\n' % (self._get_timecode(self.subtitle_start_frame), self._get_timecode(self.subtitle_end_frame), caption_text))
-        
+        self._write(
+            self.out,
+            self.subtitle_start_frame,
+            self.subtitle_end_frame,
+            self.subtitle_count,
+            True,
+            data
+        )
         self.subtitle_count += 1
+
+    def _write(self, out_func, start_frame, end_frame, count, write_non_printable, data):
+        caption_text, has_printable = self.get_caption_text(data)
+
+        if has_printable or write_non_printable:
+            out_func(count) # Required by: https://docs.fileformat.com/video/srt/
+            out_func('%s --> %s\n%s\n' % (self._get_timecode(start_frame), self._get_timecode(end_frame), caption_text))
+            return True
+        
+        return False
 
     def _get_timecode(self, frames):
         """ Returns an SRT format timestamp """
@@ -970,7 +1136,7 @@ class SRTCaptionTrack(CaptionTrack):
         minutes = int((seconds - 3600 * hours) / 60)
         seconds_disp = seconds - (minutes * 60 + hours * 3600)
         return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
-    
+
 class CaptionTrackFactory():
     def __init__(self, track_class, output_filename):
         self.current_track = None
@@ -984,7 +1150,7 @@ class CaptionTrackFactory():
         if control and byte1_parity and byte2_parity:
             cc_track = code[:3]
 
-            if cc_track in CC_SUPPORTED_CHANNELS:
+            if cc_track in CC_CHANNEL_TO_FIELD:
                 # create a new track and file if it is a new stream
                 if cc_track not in self._tracks:        
                     self._tracks[cc_track] = self._track_class(cc_track, self._output_filename)
@@ -996,7 +1162,7 @@ class CaptionTrackFactory():
         for track in self._tracks.values():
             track.close()
 
-def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
+def decode_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
         Assumes 29.97 frames per second drop time-code
          rx                 - input connection for decoded cc data
@@ -1030,8 +1196,7 @@ def decode_captions_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=N
 
     track_factory.close_tracks()
 
-
-def decode_image_list_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
+def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
         Assumes 29.97 frames per second drop time-code
          rx                 - input connection for decoded cc data
@@ -1041,6 +1206,32 @@ def decode_image_list_to_srt(rx, fixed_line=None, ccfilter=None, output_filename
          output_filename    - file name without extension to save decoded captions
     """
     track_factory = CaptionTrackFactory(SRTCaptionTrack, output_filename)
+        
+    frame = 0        
+    while True:
+        try:
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+            field0 = rows[0]
+            field1 = rows[1]
+        except:
+            break
+
+        track_factory.set_current_track(field0)
+        if track_factory.current_track is not None:
+            track_factory.current_track.add_data(field0, frame)
+
+        track_factory.set_current_track(field1)
+        if track_factory.current_track is not None:
+            track_factory.current_track.add_data(field1, frame)
+    
+        frame += 1
+
+    track_factory.close_tracks()
+
+def decode_to_text(rx, fixed_line=None, ccfilter=None, output_filename=None):
+    track_factory = CaptionTrackFactory(TextCaptionTrack, output_filename)
         
     frame = 0        
     while True:

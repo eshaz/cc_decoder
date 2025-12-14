@@ -85,15 +85,8 @@ import lib.cc_decode
 import multiprocessing
 import atexit
 import signal
-from lib.cc_decode import decode_image_list_to_srt, decode_captions_raw, decode_captions_to_scc, decode_captions_debug, extract_closed_caption_bytes
+from lib.cc_decode import decode_to_srt, decode_captions_raw, decode_to_scc, decode_to_text, decode_captions_debug, extract_closed_caption_bytes
 from lib.cc_decode import FileImageWrapper, decode_xds_packets
-
-# Defaults - won't work everywehere, that's why we allow it to be manually set
-FFMPEG_LOC = {
-    'linux2': os.path.join(os.path.sep + 'usr', 'local', 'bin', 'ffmpeg'),
-    'darwin': os.path.join(os.path.sep + 'usr', 'local', 'bin', 'ffmpeg'),
-}
-
 
 class PilImageWrapper(FileImageWrapper):
     """ Since we might want to hook the caption decoder up to live streams, etc, decouple the image object from the
@@ -114,14 +107,15 @@ class PilImageWrapper(FileImageWrapper):
 
 
 class ClosedCaptionFileDecoder(object):
-    DECODERS = {'srt': decode_image_list_to_srt,
-                'scc': decode_captions_to_scc,
+    DECODERS = {'srt': decode_to_srt,
+                'scc': decode_to_scc,
+                'text': decode_to_text,
                 'raw': decode_captions_raw,
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
     def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
-        self.ffmpeg_path = ffmpeg_path or FFMPEG_LOC.get(sys.platform)
+        self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
         self.deinterlaced = deinterlaced
         self.temp_dir_path = temp_path or tempfile.gettempdir()
@@ -247,7 +241,7 @@ class ClosedCaptionFileDecoder(object):
 def main():
     p = argparse.ArgumentParser(description='Extract visible closed captions in a video file')
 
-    ffmpeg = FFMPEG_LOC.get(sys.platform, '')
+    ffmpeg = shutil.which("ffmpeg")
     tempdir = tempfile.gettempdir()
     p.add_argument('videofile', help='Input video file name. Should be: 720 pixels wide, 29.97 fps NTSC interlaced. See `--ffmpeg_pre_scale` and `--ffmpeg_post_scale` if needing to transform the video file to these specifications.')
     p.add_argument('-o', default=None, help='Output subtitle filename without extension (omit to print to stdout)')
@@ -255,7 +249,7 @@ def main():
     p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling. Useful if additional scaling should happen before the video is scaled to 720 width.')
     p.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is de-interlaced')
     p.add_argument('--temp', default=tempdir, help='Path to temporary working area (default %s)' % tempdir)
-    p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, raw or debug (default srt)')
+    p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, text (T1-4 only), raw or debug (default srt)')
     p.add_argument('--lines', default=10, type=int,
         help='Number of lines to search for CC in the video, starting at the start line (default 10)')
     p.add_argument('--start_line', default=0, type=int, help='Start at a particular line 0=topmost line')
@@ -272,5 +266,6 @@ def main():
         decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, deinterlaced=args.deinterlaced, temp_path=args.temp, ccformat=args.ccformat,
                                            lines=args.lines, start_line=args.start_line)
         decoder.decode(args.videofile, args.o)
+        exit(0)
 
 main()
