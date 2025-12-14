@@ -162,18 +162,23 @@ class ClosedCaptionFileDecoder(object):
             atexit.register(self._cleanup)
             self.fpid = subprocess.Popen(ffmpeg_cmd, stderr=devnull)
             file_number = 1
-            while self.fpid.poll() is None:  # While ffmpeg is running
-                if os.path.exists(next_file_name(file_number)) and os.path.exists(next_file_name(file_number + 1)):
-                    # Latch on the existence of the n+1 file, which wouldn't exist until the n file is fully written
-                    yield image_wrapper(next_file_name(file_number))
-                    file_number += 1
-                else:
-                    try:
-                        time.sleep(0.25)  # Take a nap for a moment, since we must have caught up with FFMpeg
-                    except:
-                        break
+            try:
+                while self.fpid.poll() is None:  # While ffmpeg is running
+                    if os.path.exists(next_file_name(file_number)) and os.path.exists(next_file_name(file_number + 1)):
+                        # Latch on the existence of the n+1 file, which wouldn't exist until the n file is fully written
+                        yield image_wrapper(next_file_name(file_number))
+                        file_number += 1
+                    else:
+                        try:
+                            time.sleep(0.25)  # Take a nap for a moment, since we must have caught up with FFMpeg
+                        except:
+                            break
+            finally:
+                self.fpid.terminate()
+                self.fpid.wait()
+                self.fpid = None
+                
         # FFMpeg must have exited - process all remaining files
-        self.fpid = None
         while os.path.exists(next_file_name(file_number)):
             yield image_wrapper(next_file_name(file_number))
             file_number += 1
@@ -200,7 +205,7 @@ class ClosedCaptionFileDecoder(object):
                 decoder_func = self.DECODERS.get(format)
 
                 rx, tx = multiprocessing.Pipe(False)
-                decoder = multiprocessing.Process(None, decoder_func, name=f"{format}_decoder", args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
+                decoder = multiprocessing.Process(None, decoder_func, name=f"cc_decoder_{format}", args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
@@ -208,38 +213,51 @@ class ClosedCaptionFileDecoder(object):
         message = ""
         caption_count = 0
         frame_count = 0
+        error_occurred = False
 
         if len(running_decoders) > 0:
             print("Decoding captions...", file=sys.stderr)
-            for image in imagewrapper_generator:
-                rows = extract_closed_caption_bytes(image, fixed_line=None)
-                field0 = rows[0]
-                if field0[0] != None and field0[0] != "":
-                    print(" " * len(message), end="\r", file=sys.stderr)
-                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {'True ' if field0[1] else 'False'} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
-                    caption_count += 1
-                    print(message, end="\r", file=sys.stderr)
+            try:
+                for image in imagewrapper_generator:
+                    rows = extract_closed_caption_bytes(image, fixed_line=None)
+                    field0 = rows[0]
+                    if field0[0] != None and field0[0] != "":
+                        print(" " * len(message), end="\r", file=sys.stderr)
+                        message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {'True ' if field0[1] else 'False'} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
+                        caption_count += 1
+                        print(message, end="\r", file=sys.stderr)
 
-                for conn in running_decoders_conns:
-                    conn.send(rows)
-                
-                image.unlink()
-                frame_count += 1
+                    for conn in running_decoders_conns:
+                        conn.send(rows)
+                    
+                    image.unlink()
+                    frame_count += 1
+            except:
+                error_occurred = True
+                stop_decode()
+            finally:
+                for i in range(len(running_decoders_conns)):
+                    try:
+                        running_decoders_conns[i].send("DONE")
+                    except:
+                        running_decoders[i].terminate()
 
-            for conn in running_decoders_conns:
-                conn.send("DONE")
-    
-            for decoder in running_decoders:
-                decoder.join()
-        
-            print("", file=sys.stderr)
-            print("Done!", file=sys.stderr)
+                for decoder in running_decoders:
+                    decoder.join()
+
+            if error_occurred:
+                print("", file=sys.stderr)
+                print("Error decoding, check the exception above.", file=sys.stderr)
+                return 1
+            else:
+                print("", file=sys.stderr)
+                print("Done!", file=sys.stderr)
+                return 0
         else:
             raise RuntimeError('Unknown output format %s, try one of %s' % (format, self.DECODERS.keys()))
 
-
 def main():
-    p = argparse.ArgumentParser(description='Extract visible closed captions in a video file')
+    p = argparse.ArgumentParser(description='Extract line 21 data from a video file')
 
     ffmpeg = shutil.which("ffmpeg")
     tempdir = tempfile.gettempdir()
@@ -265,7 +283,6 @@ def main():
     if args.videofile:
         decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, deinterlaced=args.deinterlaced, temp_path=args.temp, ccformat=args.ccformat,
                                            lines=args.lines, start_line=args.start_line)
-        decoder.decode(args.videofile, args.o)
-        exit(0)
+        exit(decoder.decode(args.videofile, args.o))
 
 main()

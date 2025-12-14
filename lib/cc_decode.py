@@ -49,6 +49,9 @@ import os
 import re
 import sys
 
+from setproctitle import setproctitle
+from multiprocessing import current_process
+
 # Assumes 27 pixel wide 'bit' starting at pixel 280 - assumes 720 pixel wide video (enforced elsewhere)
 # Odd parity on the rightmost bit, we sample central pixels of the bit and average
 BYTE1_LOCATIONS = [285 + (i * 27) for i in range(0, 8)]
@@ -609,6 +612,7 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
          ccfilter           - ignored 
          output_filename    - file name without extension to save decoded captions
     """
+    setproctitle(current_process().name)
     buff = ''  # CC Buffer
     frame = 0
 
@@ -652,6 +656,7 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
          ccfilter           - ignored
          output_filename    - file name without extension to save decoded captions
     """
+    setproctitle(current_process().name)
     frame = 0
     codes = []
 
@@ -675,7 +680,7 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
         frame += 1
     
     if f is not None:
-        f.close()    
+        f.close()
     
     return codes
 
@@ -1171,6 +1176,7 @@ def decode_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
          ccfilter           - ignored
          output_filename    - file name without extension to save decoded captions
     """
+    setproctitle(current_process().name)
     track_factory = CaptionTrackFactory(SCCCaptionTrack, output_filename)
         
     frame = 0        
@@ -1205,6 +1211,7 @@ def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
          ccfilter           - ignored
          output_filename    - file name without extension to save decoded captions
     """
+    setproctitle(current_process().name)
     track_factory = CaptionTrackFactory(SRTCaptionTrack, output_filename)
         
     frame = 0        
@@ -1231,6 +1238,7 @@ def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
     track_factory.close_tracks()
 
 def decode_to_text(rx, fixed_line=None, ccfilter=None, output_filename=None):
+    setproctitle(current_process().name)
     track_factory = CaptionTrackFactory(TextCaptionTrack, output_filename)
         
     frame = 0        
@@ -1459,6 +1467,7 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
          ccfilter           - ignored
          output_filename    - file name without extension to save decoded captions
     """
+    setproctitle(current_process().name)
     frame = 0
     packetbuf = []
     gather_xds_bytes = False
