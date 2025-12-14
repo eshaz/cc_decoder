@@ -85,15 +85,8 @@ import lib.cc_decode
 import multiprocessing
 import atexit
 import signal
-from lib.cc_decode import decode_image_list_to_srt, decode_captions_raw, decode_captions_to_scc, decode_captions_debug, extract_closed_caption_bytes
+from lib.cc_decode import decode_to_srt, decode_captions_raw, decode_to_scc, decode_to_text, decode_captions_debug, extract_closed_caption_bytes
 from lib.cc_decode import FileImageWrapper, decode_xds_packets
-
-# Defaults - won't work everywehere, that's why we allow it to be manually set
-FFMPEG_LOC = {
-    'linux2': os.path.join(os.path.sep + 'usr', 'local', 'bin', 'ffmpeg'),
-    'darwin': os.path.join(os.path.sep + 'usr', 'local', 'bin', 'ffmpeg'),
-}
-
 
 class PilImageWrapper(FileImageWrapper):
     """ Since we might want to hook the caption decoder up to live streams, etc, decouple the image object from the
@@ -114,14 +107,15 @@ class PilImageWrapper(FileImageWrapper):
 
 
 class ClosedCaptionFileDecoder(object):
-    DECODERS = {'srt': decode_image_list_to_srt,
-                'scc': decode_captions_to_scc,
+    DECODERS = {'srt': decode_to_srt,
+                'scc': decode_to_scc,
+                'text': decode_to_text,
                 'raw': decode_captions_raw,
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
     def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
-        self.ffmpeg_path = ffmpeg_path or FFMPEG_LOC.get(sys.platform)
+        self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
         self.deinterlaced = deinterlaced
         self.temp_dir_path = temp_path or tempfile.gettempdir()
@@ -168,18 +162,23 @@ class ClosedCaptionFileDecoder(object):
             atexit.register(self._cleanup)
             self.fpid = subprocess.Popen(ffmpeg_cmd, stderr=devnull)
             file_number = 1
-            while self.fpid.poll() is None:  # While ffmpeg is running
-                if os.path.exists(next_file_name(file_number)) and os.path.exists(next_file_name(file_number + 1)):
-                    # Latch on the existence of the n+1 file, which wouldn't exist until the n file is fully written
-                    yield image_wrapper(next_file_name(file_number))
-                    file_number += 1
-                else:
-                    try:
-                        time.sleep(0.25)  # Take a nap for a moment, since we must have caught up with FFMpeg
-                    except:
-                        break
+            try:
+                while self.fpid.poll() is None:  # While ffmpeg is running
+                    if os.path.exists(next_file_name(file_number)) and os.path.exists(next_file_name(file_number + 1)):
+                        # Latch on the existence of the n+1 file, which wouldn't exist until the n file is fully written
+                        yield image_wrapper(next_file_name(file_number))
+                        file_number += 1
+                    else:
+                        try:
+                            time.sleep(0.25)  # Take a nap for a moment, since we must have caught up with FFMpeg
+                        except:
+                            break
+            finally:
+                self.fpid.terminate()
+                self.fpid.wait()
+                self.fpid = None
+                
         # FFMpeg must have exited - process all remaining files
-        self.fpid = None
         while os.path.exists(next_file_name(file_number)):
             yield image_wrapper(next_file_name(file_number))
             file_number += 1
@@ -206,7 +205,7 @@ class ClosedCaptionFileDecoder(object):
                 decoder_func = self.DECODERS.get(format)
 
                 rx, tx = multiprocessing.Pipe(False)
-                decoder = multiprocessing.Process(None, decoder_func, name=f"{format}_decoder", args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
+                decoder = multiprocessing.Process(None, decoder_func, name=f"cc_decoder_{format}", args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
@@ -214,40 +213,53 @@ class ClosedCaptionFileDecoder(object):
         message = ""
         caption_count = 0
         frame_count = 0
+        error_occurred = False
 
         if len(running_decoders) > 0:
             print("Decoding captions...", file=sys.stderr)
-            for image in imagewrapper_generator:
-                rows = extract_closed_caption_bytes(image, fixed_line=None)
-                field0 = rows[0]
-                if field0[0] != None and field0[0] != "":
-                    print(" " * len(message), end="\r", file=sys.stderr)
-                    message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {'True ' if field0[1] else 'False'} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
-                    caption_count += 1
-                    print(message, end="\r", file=sys.stderr)
+            try:
+                for image in imagewrapper_generator:
+                    rows = extract_closed_caption_bytes(image, fixed_line=None)
+                    field0 = rows[0]
+                    if field0[0] != None and field0[0] != "":
+                        print(" " * len(message), end="\r", file=sys.stderr)
+                        message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {'True ' if field0[1] else 'False'} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
+                        caption_count += 1
+                        print(message, end="\r", file=sys.stderr)
 
-                for conn in running_decoders_conns:
-                    conn.send(rows)
-                
-                image.unlink()
-                frame_count += 1
+                    for conn in running_decoders_conns:
+                        conn.send(rows)
+                    
+                    image.unlink()
+                    frame_count += 1
+            except:
+                error_occurred = True
+                stop_decode()
+            finally:
+                for i in range(len(running_decoders_conns)):
+                    try:
+                        running_decoders_conns[i].send("DONE")
+                    except:
+                        running_decoders[i].terminate()
 
-            for conn in running_decoders_conns:
-                conn.send("DONE")
-    
-            for decoder in running_decoders:
-                decoder.join()
-        
-            print("", file=sys.stderr)
-            print("Done!", file=sys.stderr)
+                for decoder in running_decoders:
+                    decoder.join()
+
+            if error_occurred:
+                print("", file=sys.stderr)
+                print("Error decoding, check the exception above.", file=sys.stderr)
+                return 1
+            else:
+                print("", file=sys.stderr)
+                print("Done!", file=sys.stderr)
+                return 0
         else:
             raise RuntimeError('Unknown output format %s, try one of %s' % (format, self.DECODERS.keys()))
 
-
 def main():
-    p = argparse.ArgumentParser(description='Extract visible closed captions in a video file')
+    p = argparse.ArgumentParser(description='Extract line 21 data from a video file')
 
-    ffmpeg = FFMPEG_LOC.get(sys.platform, '')
+    ffmpeg = shutil.which("ffmpeg")
     tempdir = tempfile.gettempdir()
     p.add_argument('videofile', help='Input video file name. Should be: 720 pixels wide, 29.97 fps NTSC interlaced. See `--ffmpeg_pre_scale` and `--ffmpeg_post_scale` if needing to transform the video file to these specifications.')
     p.add_argument('-o', default=None, help='Output subtitle filename without extension (omit to print to stdout)')
@@ -255,7 +267,7 @@ def main():
     p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling. Useful if additional scaling should happen before the video is scaled to 720 width.')
     p.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is de-interlaced')
     p.add_argument('--temp', default=tempdir, help='Path to temporary working area (default %s)' % tempdir)
-    p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, raw or debug (default srt)')
+    p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, text (T1-4 only), raw or debug (default srt)')
     p.add_argument('--lines', default=10, type=int,
         help='Number of lines to search for CC in the video, starting at the start line (default 10)')
     p.add_argument('--start_line', default=0, type=int, help='Start at a particular line 0=topmost line')
@@ -271,6 +283,6 @@ def main():
     if args.videofile:
         decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, deinterlaced=args.deinterlaced, temp_path=args.temp, ccformat=args.ccformat,
                                            lines=args.lines, start_line=args.start_line)
-        decoder.decode(args.videofile, args.o)
+        exit(decoder.decode(args.videofile, args.o))
 
 main()
