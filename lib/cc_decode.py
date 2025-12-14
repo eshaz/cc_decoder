@@ -823,6 +823,9 @@ class CaptionTrack:
         else:
             self._buffer_on_screen = []
 
+        if self.mode != "text":
+            self._text_buffer = []
+
     def add_on_screen(self, data, frames):
         raise NotImplemented
 
@@ -834,11 +837,18 @@ class CaptionTrack:
     
     def add_text(self, data, frames):
         raise NotImplemented
+    
+    def write_text(self, data, frames):
+        if self.f_text is None:
+            self.open_text()
+    
+    def write_caption(self, data, frames):
+        if self.f is None:
+            self.open()
 
 class SCCCaptionTrack(CaptionTrack):
     def __init__(self, cc_track, output_filename):
         super().__init__(cc_track, output_filename, "scc")
-        self.open()
     
     def open(self):
         super().open()
@@ -852,15 +862,15 @@ class SCCCaptionTrack(CaptionTrack):
         super().global_resume_direct(data, frames)
 
         self._buffer_on_screen.append(data)
-        self._write(self.out, self._buffer_on_screen, frames)
+        self.write_caption(self._buffer_on_screen, frames)
 
     def global_start_roll_up(self, data, frames):
         super().global_start_roll_up(data, frames)
-        self._write(self.out, [data], frames)
+        self.write_caption([data], frames)
 
     def global_start_text_mode(self, data, frames):
         super().global_start_text_mode(data, frames)
-        self._write(self.out_text, [data], frames)
+        self.write_text([data], frames)
 
     def global_start_xds_mode(self, data, frames):
         super().global_start_xds_mode(data, frames)
@@ -868,29 +878,29 @@ class SCCCaptionTrack(CaptionTrack):
     def global_text_reset(self, data, frames):
         self.add_text(self, data, frames)
 
-        self._write(self.out_text, self._text_buffer, frames)
+        self.write_text(self._text_buffer, frames)
         self._text_buffer = []
         
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
 
         self._buffer_on_screen.append(data)
-        self._write(self.out, self._buffer_on_screen, frames)
+        self.write_caption(self._buffer_on_screen, frames)
 
     def global_erase_displayed_memory(self, data, frames):
         super().global_erase_displayed_memory(data, frames)
 
-        self._write(self.out, [data], frames) # send clear screen command
+        self.write_caption([data], frames) # send clear screen command
     
     def add_on_screen(self, data, frames):
         self._buffer_on_screen.append(data)
-        self._write(self.out, self._buffer_on_screen, frames)
+        self.write_caption(self._buffer_on_screen, frames)
 
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
 
     def add_on_screen_roll_up(self, data, frames):
-        self._write(self.out, [data], frames)
+        self.write_caption([data], frames)
 
     def add_text(self, data, frames):
         code, _, _, _, _, _ = data
@@ -899,6 +909,14 @@ class SCCCaptionTrack(CaptionTrack):
         if 'Carriage Return' in code:
             self._write(self.out_text, self._text_buffer, frames)
             self._text_buffer = []
+
+    def write_text(self, data, frames):        
+        super().write_text(data, frames)
+        self._write(self.out_text, data, frames)
+
+    def write_caption(self, data, frames):
+        super().write_caption(data, frames)
+        self._write(self.out, data, frames)
 
     def _write(self, out_func, data, frames):
         scc_data = [self._get_subtitle_data(n) for n in data]
@@ -925,8 +943,6 @@ class TextCaptionTrack(CaptionTrack):
     def global_text_reset(self, data, frames):
         self._write(self._text_buffer)
         self._text_buffer = []
-
-        self.global_start_text_mode(self, data, frames)
     
     def dedupe_bad_data_from_text(self, code):
         if self.prev_char == None:
@@ -989,14 +1005,15 @@ class TextCaptionTrack(CaptionTrack):
         code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code and code == self.prev_code:
-            self._write(self._text_buffer)
+            self.write_text(self._text_buffer, frames)
             self._text_buffer = []
         else:
             self._text_buffer.append(data)
 
-    def _write(self, data):
+    def write_text(self, data, frames):
         caption_text, has_printable = self.get_caption_text(data)
         if has_printable:
+            super().write_text(data, frames)
             # remove the last linebreak since one will be added by print
             self.out_text(caption_text.rstrip('\n'))
 
@@ -1012,7 +1029,6 @@ class TextCaptionTrack(CaptionTrack):
 class SRTCaptionTrack(TextCaptionTrack):
     def __init__(self, cc_track, output_filename):
         super().__init__(cc_track, output_filename, "srt")
-        self.open()
 
         self.subtitle_count = 1
         self.subtitle_start_frame = 0
@@ -1040,10 +1056,8 @@ class SRTCaptionTrack(TextCaptionTrack):
             self.text_start_frame = frames
 
     def global_text_reset(self, data, frames):
-        self._write_text(self._text_buffer, frames)
+        self.write_text(self._text_buffer, frames)
         self._text_buffer = []
-
-        self.global_start_text_mode(self, data, frames)
 
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
@@ -1053,10 +1067,10 @@ class SRTCaptionTrack(TextCaptionTrack):
         # end the subtitle and write to the screen
         if self.mode == "roll_up":
             if len(self._roll_up_buffer) > 0:
-                self._write_caption(self._roll_up_buffer, frames)
+                self.write_caption(self._roll_up_buffer, frames)
         else:
             if len(self._buffer_on_screen) > 0:
-                self._write_caption(self._buffer_on_screen, frames)
+                self.write_caption(self._buffer_on_screen, frames)
 
         # clear the on screen buffer
         super().global_erase_displayed_memory(data, frames)
@@ -1064,7 +1078,7 @@ class SRTCaptionTrack(TextCaptionTrack):
     def add_on_screen(self, data, frames):
         self._buffer_on_screen.append(data)
         # write the onscreen buffer to screen
-        self._write_caption(self._buffer_on_screen, frames)
+        self.write_caption(self._buffer_on_screen, frames)
 
     def add_off_screen(self, data):
         self._buffer_off_screen.append(data)
@@ -1092,46 +1106,44 @@ class SRTCaptionTrack(TextCaptionTrack):
         code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code and code == self.prev_code:
-            self._write_text(self._text_buffer, frames)
+            self.write_text(self._text_buffer, frames)
             self._text_buffer = []
         else:
             self._text_buffer.append(data)
     
-    def _write_text(self, data, frames):
+    def write_text(self, data, frames):
         self.text_end_frame = frames
-        wrote_text = self._write(
-            self.out_text,
-            self.text_start_frame,
-            self.text_end_frame,
-            self.text_count,
-            False,
-            data
-        )
-        if wrote_text:
-           self.text_start_frame = frames
-           self.text_count += 1
+        caption_text, has_printable = self.get_caption_text(data)
+        if has_printable:
+            super().write_text(data, frames)
+            self._write(
+                self.out_text,
+                self.text_start_frame,
+                self.text_end_frame,
+                self.text_count,
+                caption_text
+            )
+            self.text_start_frame = frames
+            self.text_count += 1
 
-    def _write_caption(self, data, frames):
+    def write_caption(self, data, frames):
+        super().write_caption(data, frames)
+
         self.subtitle_end_frame = frames
+        caption_text, _ = self.get_caption_text(data)
         self._write(
             self.out,
             self.subtitle_start_frame,
             self.subtitle_end_frame,
             self.subtitle_count,
-            True,
-            data
+            caption_text
         )
         self.subtitle_count += 1
 
-    def _write(self, out_func, start_frame, end_frame, count, write_non_printable, data):
-        caption_text, has_printable = self.get_caption_text(data)
-
-        if has_printable or write_non_printable:
-            out_func(count) # Required by: https://docs.fileformat.com/video/srt/
-            out_func('%s --> %s\n%s\n' % (self._get_timecode(start_frame), self._get_timecode(end_frame), caption_text))
-            return True
-        
-        return False
+    def _write(self, out_func, start_frame, end_frame, count, caption_text):
+        out_func(count) # Required by: https://docs.fileformat.com/video/srt/
+        out_func('%s --> %s\n%s\n' % (self._get_timecode(start_frame), self._get_timecode(end_frame), caption_text))
+        return True
 
     def _get_timecode(self, frames):
         """ Returns an SRT format timestamp """
