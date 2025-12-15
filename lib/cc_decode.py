@@ -48,26 +48,20 @@ __email__ = None  # Sorry, I get far too much spam as it is. Track me down at ht
 import os
 import re
 import sys
+import math
+
+import numpy as np
+import matplotlib.pyplot as plt
+
 
 from setproctitle import setproctitle
 from multiprocessing import current_process
-
-# Assumes 27 pixel wide 'bit' starting at pixel 280 - assumes 720 pixel wide video (enforced elsewhere)
-# Odd parity on the rightmost bit, we sample central pixels of the bit and average
-BYTE1_LOCATIONS = [285 + (i * 27) for i in range(0, 8)]
-BYTE2_LOCATIONS = [285 + (i * 27) for i in range(8, 16)]
-
-# Sine wave preamble indicates presence of captions
-SYNC_SIGNAL_LOCATIONS_HIGH = [28 + (i * 27) for i in range(0, 7)]  # White
-SYNC_SIGNAL_LOCATIONS_LOW = [14 + (i * 27) for i in range(0, 7)]   # Black
-
-# When searching for preamble - search in this range
-PREAMBLE_SCAN_RANGE = range(-13, 30)
 
 # Bit value of 1 above this 'luma' level, 0 below
 LUMA_THRESHOLD = 80  # Standard is 50IRE +/- 12
                      # which is an 8 bit pixel level of around 97 - 99 depending on if 16-235 or 0-255 is used
                      # set it a little lower here to be a little forgiving of analogue to digital conversion
+
 
 CC_TABLE = {
     0x00: '',  # Special - included here to clear a few things up
@@ -414,7 +408,7 @@ CC_CHANNEL_TO_TEXT_CHANNEL = {
 }
 
 lastPreambleOffset = 0  # Global cache last preamble offset
-lastRowFound = 0  # Global, cache the last row we found cc's on
+field_0_last_row = 0  # Global, cache the last row we found cc's on
 
 
 def memoize(f):
@@ -469,98 +463,233 @@ def decode_byte_pair(control, byte1, byte2, default_unicode=True):
     return '' + CC_TABLE.get(byte1, '?b1(%02x)' % (byte1) if default_unicode else "") + \
            CC_TABLE.get(byte2, '?b2(%02x)' % (byte2) if default_unicode else "")
 
+template_cache = {}
 
-def decode_byte(image, bit_locations, sample_size, row_number, offset=0):
-    """ Decode a single byte from a closed caption images
-         bit_locations - where to start sampling for each bit
-         sample_size   - how many pixels to average for each bit
-         row_number    - which row number to look at
-         offset       """
-    def pixel_avg(x):
-        return sum(image.get_pixel_luma(i + offset, row_number) for i in range(x, x + sample_size)) / sample_size
+def decode_row(img, row):
+    # number of clock run-in cycles
+    clock_run_in_count = 7
+    # number of start bits
+    start_bit_count = 3
+    # number of data bits
+    data_bit_count = 16
 
-    b = [pixel_avg(col) > LUMA_THRESHOLD for col in bit_locations]
-    return b[0] + b[1] * 2 + b[2] * 4 + b[3] * 8 + b[4] * 16 + b[5] * 32 + b[6] * 64  + b[7] * 128
+    # clock run-in fit parameters
+    # lower boundary for period width
+    min_clock_len = 25
+    # upper boundary for period width
+    max_clock_len = 30
+    # granularity of period width
+    steps = (max_clock_len - min_clock_len) * 5
+    # fraction of data to remove at edges of each detected bit
+    bit_width_padding = 0.1
 
+    # Read and normalize line
+    line = np.array([img.get_pixel_luma(w, row) for w in range(img.width)], dtype=int)
 
-def decode_row(image, sample_size=3, row_number=1, offset=0):
-    """ Attempt to pull two bytes worth of CC values out of a passed row of luma values
-          sample_size - how many pixels wide to read each bit (Noise/drop-out reduction)
-          row_number  - which row (y) of video to read as line 21 (typically row 1)
-          offset      - column (x) starting offset, default is zero which reflects typical starting point """
-    return (decode_byte(image, BYTE1_LOCATIONS, sample_size, row_number, offset),
-            decode_byte(image, BYTE2_LOCATIONS, sample_size, row_number, offset))
+    line_min, line_max = line.min(), line.max()
+    if line_min == line_max:
+        return None, None, None, None, None, None
+    norm = (line - line_min) / (line_max - line_min)
+    norm_len = len(norm)
 
+    # ---- CLOCK RUN-IN MATCH ----
+    # Precompute cumulative sums for fast variance computation
+    cumsum = np.cumsum(norm)
+    cumsum2 = np.cumsum(norm ** 2)
 
-def is_cc_present(image, row_number=1):
-    """ Looks for the sine CC timing signal at the start of a row """
-    def pixel(im, x, y):
-        return im.get_pixel_luma(x, y)
+    best_score = -np.inf
+    preamble_start = None
+    bit_width = None
+    best_template = None
+    for pixels_per_cycle in np.linspace(min_clock_len, max_clock_len, steps):
+        run_len = round(clock_run_in_count * pixels_per_cycle)
+        max_width = round((clock_run_in_count + start_bit_count + data_bit_count) * pixels_per_cycle)
+        if max_width >= norm_len:
+            continue
 
-    def scan_preamble(img, row_num, h_offset, tthreshold):
-        for loc in SYNC_SIGNAL_LOCATIONS_HIGH:
-            if pixel(img, loc + h_offset, row_num) < tthreshold:
-                return False
-        for loc in SYNC_SIGNAL_LOCATIONS_LOW:
-            if pixel(img, loc + h_offset, row_num) > tthreshold:
-                return False
-        return True
+        # Build or reuse template
+        if pixels_per_cycle not in template_cache:
+            t = np.arange(run_len)
+            template = np.sin(2 * np.pi * t / pixels_per_cycle)
+            template -= template.mean()
+            var_t = np.sum(template ** 2)
+            template_cache[pixels_per_cycle] = (template, var_t)
+        else:
+            template, var_t = template_cache[pixels_per_cycle]
 
-    global lastPreambleOffset
-    if scan_preamble(image, row_number, lastPreambleOffset, LUMA_THRESHOLD):
-        return True  # Optimisation - assume preamble doesn't drift
+        # normalized correlation
+        conv = np.convolve(norm, template[::-1], mode='valid')
+        sum_x = cumsum[run_len-1:] - np.concatenate(([0], cumsum[:-run_len]))
+        sum_x2 = cumsum2[run_len-1:] - np.concatenate(([0], cumsum2[:-run_len]))
+        var_x = sum_x2 - sum_x ** 2 / run_len
+        score = (conv ** 2) / (var_t * var_x + 1e-12)
 
-    for offset in PREAMBLE_SCAN_RANGE:
-        if scan_preamble(image, row_number, offset, LUMA_THRESHOLD):
-            lastPreambleOffset = offset
-            ## Found a match - but let's optimize - scan forwards until we break
-            for tweak in range(12):
-                if not scan_preamble(image, row_number, offset + tweak, LUMA_THRESHOLD):
-                    ## Found a negative match, take the middle of the range between the start and end of the match
-                    lastPreambleOffset = int(offset + (0.5 * tweak))
-                    break
-            return True
-    return False
+        idx = np.argmax(score)
+        if idx + max_width >= norm_len:
+            continue
+        if score[idx] > best_score:
+            best_score = score[idx]
+            preamble_start = idx
+            bit_width = pixels_per_cycle
+            best_template = template
+
+    if best_template is None:
+        return None, None, None, None, None, None
+
+    # ---- PHASE CORRECTION ----
+    run_len = round(clock_run_in_count * bit_width)
+    seg = norm[round(preamble_start):round(preamble_start) + run_len]
+    if np.dot(seg - seg.mean(), best_template) < 0:
+        # flip phase
+        preamble_start += bit_width / 2
+
+    # final clock run-in start, end, and median amplitude
+    preamble_end = preamble_start + (clock_run_in_count - 0.5) * bit_width
+    mid = np.mean(norm[round(preamble_start):round(preamble_end)])
+
+    # ---- BIT DECODING ----
+    bit_padding = math.ceil(bit_width_padding * bit_width)
+
+    bits, bit_stds = [], []
+    for i in range(start_bit_count + data_bit_count):
+        s = round(preamble_end + i * bit_width) + bit_padding
+        e = round(preamble_end + (i + 1) * bit_width) - bit_padding
+
+        seg = norm[s:e]
+        bits.append(1 if seg.mean() > mid else 0)
+        bit_stds.append(seg.std())
+
+    # assert start bit
+    if bits[0] != 0 or bits[1] != 0 or bits[2] != 1:
+        return None, None, None, None, None, None
+
+    # build each byte
+    byte_data, byte_parity = [], []
+    for i in range(2):
+        b_start = start_bit_count + i * 8
+        b_end = b_start + 8
+        b_bits = bits[b_start:b_end]
+        b_stds = bit_stds[b_start:b_end]
+
+        # Try to recover least confident bit using parity
+        max_std_idx = np.argmax(b_stds)
+        if max_std_idx < 7:
+            # reconstruct data bit, if parity is good
+            known_count = sum(b_bits[:7][j] for j in range(7) if j != max_std_idx)
+            b_bits[max_std_idx] = 1 if (known_count + b_bits[7]) % 2 == 0 else 0
+
+        parity = 1 if sum(b_bits[:7]) % 2 == 0 else 0
+        
+        if max_std_idx == 7:
+            # reconstruct parity bit, if data is good
+            b_bits[7] = parity
+
+        # write out the bytes
+        byte_data.append(
+            b_bits[0]
+            | (b_bits[1] << 1)
+            | (b_bits[2] << 2)
+            | (b_bits[3] << 3)
+            | (b_bits[4] << 4)
+            | (b_bits[5] << 5)
+            | (b_bits[6] << 6)
+        )
+        byte_parity.append(b_bits[7] == parity)
+
+    # uncomment to debug
+    #if best_score > 0.75 and not (byte_parity[0] or byte_parity[1]):
+    #    print("bit width", bit_width, "score", best_score)
+    #    debug_plot(norm, preamble_start, preamble_end, bit_width, bits, bit_width_padding)
+
+    return best_score, preamble_start, byte_data[0], byte_data[1], byte_parity[0], byte_parity[1]
+
+def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_padding):
+    line = np.asarray(line, dtype=float)
+    n = len(line)
+    
+    # Compute mid, amplitude for sine wave
+    mid = np.mean(line[preamble_start:preamble_end])
+    high = np.max(line[preamble_start:preamble_end])
+    low = np.min(line[preamble_start:preamble_end])
+    amplitude = (high - low) / 2
+    
+    # Full sine wave for the line
+    t = np.arange(n)
+    phase_offset = 2 * np.pi * preamble_start / width
+    sine_full = mid + amplitude * np.sin(2 * np.pi * t / width - phase_offset)
+    
+    # Plot the waveform
+    plt.figure(figsize=(12, 4))
+    plt.plot(line, label='Line waveform', color="black")
+    plt.plot(sine_full, label='Sine wave', color='red', alpha=0.7)
+    
+    # Clock run-in start and end
+    plt.axvline(preamble_start, color='green', linestyle='--', label='Clock start')
+    plt.axvline(preamble_end, color='purple', linestyle='--', label='Clock end')
+    
+    # Overlay bit markers
+    bit_count = len(bits)
+    bit_padding = bit_width_padding * width
+    starts = preamble_end + np.arange(bit_count) * width + bit_padding
+    ends = starts + width - 2 * bit_padding
+    
+    for i, (s, e, b) in enumerate(zip(starts, ends, bits)):
+        color = 'blue' if b == 1 else 'orange'
+        plt.axvspan(s, e, color=color, alpha=0.3)
+        plt.text((s+e)/2, mid + amplitude*1.1, str(b), color='black', ha='center', va='bottom')
+    
+    plt.xlabel('Pixel position')
+    plt.ylabel('Amplitude')
+    plt.title('Line waveform with sine wave and decoded bits')
+    plt.legend()
+    plt.show()
 
 
 def find_and_decode_fields(img, fixed_line=None):
     """ Search for a closed caption row in the passed image, if one is present decode and return the bytes present """
-    global lastRowFound
+    global field_0_last_row
+    global lastPreambleOffset
 
-    # move the search up to search both fields, eventually reach 0 if nothing is found
-    lastRowFound -= 1
+    if field_0_last_row > img.height - 2:
+        field_0_last_row = 0  # Protect against streams suddenly losing a few rows
+    if field_0_last_row < 0:
+        field_0_last_row = 0
 
-    if lastRowFound > img.height - 2:
-        lastRowFound = 0  # Protect against streams suddenly losing a few rows
-    if lastRowFound < 0:
-        lastRowFound = 0
-
-    row_target = fixed_line or lastRowFound
+    row_target = fixed_line or field_0_last_row
     fields_found = {
-        0: (None, None),
-        1: (None, None)
+        0: (None, None, None, None),
+        1: (None, None, None, None)
     }
 
-    start = row_target if is_cc_present(img, row_number=row_target) else 0
-    field_num = 0
-    for row in range(start, img.height-1):
-        if is_cc_present(img, row_number=row):
-            lastRowFound = row
-            fields_found[field_num] = decode_row(img, row_number=row)
-            field_num += 1
-        if field_num == 2:
-            break
-    
+    max_search = img.height - 2
+    start_row_bad = False
+    row_idx = row_target
+    field_idx = 0
+
+    while row_idx < max_search:
+        # first try to search from the previous good row
+        score, preamble_offset, b1, b2, b1_parity, b2_parity = decode_row(img, row_idx)
+
+        if score is not None and score > 0.75:
+            fields_found[field_idx] = (b1, b2, b1_parity, b2_parity)
+            lastPreambleOffset = preamble_offset
+
+            if field_idx == 0:
+                field_0_last_row = row_idx
+                row_idx += 1
+                field_idx += 1
+            else:
+                # found both fields
+                break
+        elif not start_row_bad and field_idx == 0:
+            # if the first field is bad when starting at the previous good row
+            # reset the loop
+            start_row_bad = True
+            row_idx = 0
+        else:
+            row_idx += 1
+
     return fields_found
-
-@memoize
-def check_parity(byte):
-    total_ones = bin(byte).count('1')
-
-    if total_ones % 2 == 1:
-        return byte & 0x7f, True
-    else:
-        return byte & 0x7f, False
 
 def extract_closed_caption_bytes(img, fixed_line=None):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
@@ -569,12 +698,10 @@ def extract_closed_caption_bytes(img, fixed_line=None):
         0: (None, False, None, None, None, None),
         1: (None, False, None, None, None, None)
     }
-    for field_num, (raw_byte1, raw_byte2) in find_and_decode_fields(img, fixed_line).items():
-        if raw_byte1 is None and raw_byte2 is None:
+    for field_num, (byte1, byte2, byte1_parity, byte2_parity) in find_and_decode_fields(img, fixed_line).items():
+        if byte1 is None:
             continue
-    
-        byte1, byte1_parity = check_parity(raw_byte1)
-        byte2, byte2_parity = check_parity(raw_byte2)
+
         control = (byte1, byte2) in ALL_CC_CONTROL_CODES
     
         # handle parity errors
@@ -636,12 +763,12 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
                     if merge_text:
                         buff += code
                     else:
-                        out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, code))
+                        out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, code))
                 elif buff:
-                    out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, buff))
+                    out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, buff))
                     buff = ''
                 if control:
-                    out_func('%i %i (%i,%i) - [%02x, %02x] - %s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, code))
+                    out_func('%i %i (%i,%i) - [%02x, %02x] - %s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, code))
         frame += 1
 
     if f is not None:
@@ -675,7 +802,7 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
            if code is None:
                out_func('%i %i skip - no preamble' % (frame, field_idx))
            else:
-               out_func('%i %i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, field_idx, lastPreambleOffset, lastRowFound, b1, b2, code))
+               out_func('%i %i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, code))
                codes.append([b1, b2])
         frame += 1
     
