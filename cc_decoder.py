@@ -215,7 +215,7 @@ class ClosedCaptionFileDecoder(object):
         frame_count = 0
         first_row_len = 0
         max_first_row_len = 0
-        error_occurred = False
+        exception = None
 
         if len(running_decoders) > 0:
             print("Decoding captions...", file=sys.stderr)
@@ -247,10 +247,9 @@ class ClosedCaptionFileDecoder(object):
                     
                     image.unlink()
                     frame_count += 1
-            except:
-                error_occurred = True
+            except Exception as e:
+                exception = e
                 stop_decode()
-                raise
             finally:
                 for i in range(len(running_decoders_conns)):
                     try:
@@ -261,10 +260,10 @@ class ClosedCaptionFileDecoder(object):
                 for decoder in running_decoders:
                     decoder.join()
 
-            if error_occurred:
+            if exception is not None:
                 print("", file=sys.stderr)
                 print("Error decoding, check the exception above.", file=sys.stderr)
-                return 1
+                raise exception
             else:
                 print("", file=sys.stderr)
                 print("Done!", file=sys.stderr)

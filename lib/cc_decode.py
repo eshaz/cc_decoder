@@ -1591,6 +1591,7 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
     setproctitle(current_process().name)
     frame = 0
     packetbuf = []
+    xds_row = -1
     gather_xds_bytes = False
 
     out_func = None
@@ -1606,26 +1607,37 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
 
         frame += 1
 
-        # try CC3, CC4 first, otherwise try CC1, CC2
-        for row in rows[::1]:
-            row_num, code, control, b1, b1_parity, b2, b2_parity = row
-            if code is not None:
-                if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
-                    if b1 <= 0x0e:  # Start of XDS packet'
-                        gather_xds_bytes = True
-                    if gather_xds_bytes:
-                        packetbuf.append((b1, b2))
-                    if b1 == 0x0f:  # End of XDS packet
-                        gather_xds_bytes = False
-                        try:
-                            if out_func == None:
-                                out_func, f = get_output_function("xds", output_filename)
+        # check for xds row, and replace row if found in another row
+        for row in rows:
+            row_num, code, _, b1, b1_parity, b2, b2_parity = row
 
-                            out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
-                        except KeyError as e:
-                            print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
-                            pass
-                        packetbuf = []
+            if b1 > 0 and b1 <= 0xf and b1_parity and b2_parity:
+                xds_row = row_num
+
+        # if xds is found, read it
+        if xds_row != -1:
+            for row in rows:
+                row_num, code, _, b1, b1_parity, b2, b2_parity = row
+
+                if xds_row == row_num:
+                    if code is not None:
+                        if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
+                            if b1 <= 0x0e:  # Start of XDS packet'
+                                gather_xds_bytes = True
+                            if gather_xds_bytes:
+                                packetbuf.append((b1, b2))
+                            if b1 == 0x0f:  # End of XDS packet
+                                gather_xds_bytes = False
+                                try:
+                                    if out_func == None:
+                                        out_func, f = get_output_function("xds", output_filename)
     
+                                    out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
+                                except KeyError as e:
+                                    print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
+                                    pass
+                                packetbuf = []
+                    break
+
     if f is not None:
         f.close()
