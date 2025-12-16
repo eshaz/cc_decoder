@@ -213,6 +213,8 @@ class ClosedCaptionFileDecoder(object):
         message = ""
         caption_count = 0
         frame_count = 0
+        first_row_len = 0
+        max_first_row_len = 0
         error_occurred = False
 
         if len(running_decoders) > 0:
@@ -220,12 +222,25 @@ class ClosedCaptionFileDecoder(object):
             try:
                 for image in imagewrapper_generator:
                     rows = extract_closed_caption_bytes(image, fixed_line=None)
-                    field0 = rows[0]
-                    if field0[0] != None and field0[0] != "":
-                        print(" " * len(message), end="\r", file=sys.stderr)
-                        message = f"Frame: {frame_count} | Code Count: {caption_count} | Control: {'True ' if field0[1] else 'False'} | Byte1: {hex(field0[2])} | Byte2: {hex(field0[3])} | {field0[0]} "
+
+                    print(" " * len(message) + "\r", end="", file=sys.stderr)
+                    message = f"Frame: {frame_count} | Code Count: {caption_count}"
+
+                    for i, (row_num, code, control, b1, _, b2, _) in enumerate(rows):
+                        if i == 1:
+                            # pad message to consistent width
+                            message = message + " " * (max_first_row_len - first_row_len)
+
+                        message = message + f" | Line: {row_num} | Control: {'True ' if control else 'False'} | Byte1: {hex(b1)} | Byte2: {hex(b2)} {'| ' + code if code != "" else ""}"
+
+                        if i == 0:
+                            first_row_len = len(message)
+                            if first_row_len > max_first_row_len:
+                                max_first_row_len = first_row_len
+
                         caption_count += 1
-                        print(message, end="\r", file=sys.stderr)
+                    
+                    print(message, end="", file=sys.stderr)
 
                     for conn in running_decoders_conns:
                         conn.send(rows)
@@ -235,6 +250,7 @@ class ClosedCaptionFileDecoder(object):
             except:
                 error_occurred = True
                 stop_decode()
+                raise
             finally:
                 for i in range(len(running_decoders_conns)):
                     try:

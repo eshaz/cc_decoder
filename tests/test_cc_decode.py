@@ -2,7 +2,7 @@ from unittest import TestCase
 from lib.cc_decode import decode_byte_pair, decode_byte, BYTE1_LOCATIONS, find_and_decode_row, \
     compute_xds_packet_checksum, extract_closed_caption_bytes, _assert_len, decode_xds_string, decode_xds_minutes_hours, \
     describe_xds_packet, decode_captions_debug, decode_to_srt, decode_to_scc, decode_xds_packets, \
-    decode_captions_raw, decode_row, decode_xds_content_advisory, BYTE2_LOCATIONS, SYNC_SIGNAL_LOCATIONS_HIGH, \
+    decode_captions_raw, decode_row_old, decode_xds_content_advisory, BYTE2_LOCATIONS, SYNC_SIGNAL_LOCATIONS_HIGH, \
     ALL_SPECIAL_CHARS, CC_TABLE, decode_xds_time_of_day
 from random import randint
 
@@ -152,7 +152,7 @@ class TestDecoding(TestCase):
         self.assertEquals(decode_byte(MockImage(100), BYTE1_LOCATIONS, 50, 10, 10), 127)
 
     def test_decode_row(self):
-        self.assertEquals(decode_row(MockImage(100)), (127, 127))
+        self.assertEquals(decode_row_old(MockImage(100)), (127, 127))
 
     def test_find_and_decode(self):
         self.assertEquals(find_and_decode_row(MockImage(0)), (None, None))

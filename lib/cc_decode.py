@@ -57,11 +57,9 @@ import matplotlib.pyplot as plt
 from setproctitle import setproctitle
 from multiprocessing import current_process
 
-# Bit value of 1 above this 'luma' level, 0 below
-LUMA_THRESHOLD = 80  # Standard is 50IRE +/- 12
-                     # which is an 8 bit pixel level of around 97 - 99 depending on if 16-235 or 0-255 is used
-                     # set it a little lower here to be a little forgiving of analogue to digital conversion
-
+CLOCK_RUN_IN_COUNT = 7
+START_BIT_COUNT = 3
+DATA_BIT_COUNT = 16
 
 CC_TABLE = {
     0x00: '',  # Special - included here to clear a few things up
@@ -408,7 +406,7 @@ CC_CHANNEL_TO_TEXT_CHANNEL = {
 }
 
 lastPreambleOffset = 0  # Global cache last preamble offset
-field_0_last_row = 0  # Global, cache the last row we found cc's on
+last_row_found = 0  # Global, cache the last row we found cc's on
 
 
 def memoize(f):
@@ -465,14 +463,7 @@ def decode_byte_pair(control, byte1, byte2, default_unicode=True):
 
 template_cache = {}
 
-def decode_row(img, row):
-    # number of clock run-in cycles
-    clock_run_in_count = 7
-    # number of start bits
-    start_bit_count = 3
-    # number of data bits
-    data_bit_count = 16
-
+def sync_to_preamble(img, row):
     # clock run-in fit parameters
     # lower boundary for period width
     min_clock_len = 25
@@ -480,15 +471,13 @@ def decode_row(img, row):
     max_clock_len = 30
     # granularity of period width
     steps = (max_clock_len - min_clock_len) * 5
-    # fraction of data to remove at edges of each detected bit
-    bit_width_padding = 0.1
 
     # Read and normalize line
     line = np.array([img.get_pixel_luma(w, row) for w in range(img.width)], dtype=int)
 
     line_min, line_max = line.min(), line.max()
     if line_min == line_max:
-        return None, None, None, None, None, None
+        return None
     norm = (line - line_min) / (line_max - line_min)
     norm_len = len(norm)
 
@@ -502,8 +491,8 @@ def decode_row(img, row):
     bit_width = None
     best_template = None
     for pixels_per_cycle in np.linspace(min_clock_len, max_clock_len, steps):
-        run_len = round(clock_run_in_count * pixels_per_cycle)
-        max_width = round((clock_run_in_count + start_bit_count + data_bit_count) * pixels_per_cycle)
+        run_len = round(CLOCK_RUN_IN_COUNT * pixels_per_cycle)
+        max_width = round((CLOCK_RUN_IN_COUNT + START_BIT_COUNT + DATA_BIT_COUNT) * pixels_per_cycle)
         if max_width >= norm_len:
             continue
 
@@ -534,39 +523,51 @@ def decode_row(img, row):
             best_template = template
 
     if best_template is None:
-        return None, None, None, None, None, None
+        return None
 
     # ---- PHASE CORRECTION ----
-    run_len = round(clock_run_in_count * bit_width)
+    run_len = round(CLOCK_RUN_IN_COUNT * bit_width)
     seg = norm[round(preamble_start):round(preamble_start) + run_len]
     if np.dot(seg - seg.mean(), best_template) < 0:
         # flip phase
         preamble_start += bit_width / 2
 
-    # final clock run-in start, end, and median amplitude
-    preamble_end = preamble_start + (clock_run_in_count - 0.5) * bit_width
-    mid = np.mean(norm[round(preamble_start):round(preamble_end)])
+    preamble_end = preamble_start + (CLOCK_RUN_IN_COUNT - 0.5) * bit_width
+
+    return {
+        "normalized_line": norm,
+        "preamble_start": preamble_start,
+        "preamble_end": preamble_end,
+        "bit_width": bit_width,
+        "score": best_score,
+    }
+
+
+def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score):
+    # fraction of data to remove at edges of each detected bit
+    bit_width_padding = 0.1
 
     # ---- BIT DECODING ----
+    nomalized_median = np.mean(normalized_line[round(preamble_start):round(preamble_end)])
     bit_padding = math.ceil(bit_width_padding * bit_width)
 
     bits, bit_stds = [], []
-    for i in range(start_bit_count + data_bit_count):
+    for i in range(START_BIT_COUNT + DATA_BIT_COUNT):
         s = round(preamble_end + i * bit_width) + bit_padding
         e = round(preamble_end + (i + 1) * bit_width) - bit_padding
 
-        seg = norm[s:e]
-        bits.append(1 if seg.mean() > mid else 0)
+        seg = normalized_line[s:e]
+        bits.append(1 if seg.mean() > nomalized_median else 0)
         bit_stds.append(seg.std())
 
     # assert start bit
     if bits[0] != 0 or bits[1] != 0 or bits[2] != 1:
-        return None, None, None, None, None, None
+        return None, None, None, None
 
     # build each byte
     byte_data, byte_parity = [], []
     for i in range(2):
-        b_start = start_bit_count + i * 8
+        b_start = START_BIT_COUNT + i * 8
         b_end = b_start + 8
         b_bits = bits[b_start:b_end]
         b_stds = bit_stds[b_start:b_end]
@@ -597,11 +598,11 @@ def decode_row(img, row):
         byte_parity.append(b_bits[7] == parity)
 
     # uncomment to debug
-    #if best_score > 0.75 and not (byte_parity[0] or byte_parity[1]):
-    #    print("bit width", bit_width, "score", best_score)
-    #    debug_plot(norm, preamble_start, preamble_end, bit_width, bits, bit_width_padding)
+    # if best_score > 0.75 and not (byte_parity[0] or byte_parity[1]):
+    #     print("bit width", bit_width, "score", best_score)
+    #     debug_plot(norm, preamble_start, preamble_end, bit_width, bits, bit_width_padding)
 
-    return best_score, preamble_start, byte_data[0], byte_data[1], byte_parity[0], byte_parity[1]
+    return byte_data[0], byte_parity[0], byte_data[1], byte_parity[1]
 
 def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_padding):
     line = np.asarray(line, dtype=float)
@@ -645,21 +646,20 @@ def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_paddin
     plt.show()
 
 
-def find_and_decode_fields(img, fixed_line=None):
+def find_and_decode_rows(img, fixed_line=None):
     """ Search for a closed caption row in the passed image, if one is present decode and return the bytes present """
-    global field_0_last_row
+    global last_row_found
     global lastPreambleOffset
 
-    if field_0_last_row > img.height - 2:
-        field_0_last_row = 0  # Protect against streams suddenly losing a few rows
-    if field_0_last_row < 0:
-        field_0_last_row = 0
+    last_row_found -= 1
 
-    row_target = fixed_line or field_0_last_row
-    fields_found = {
-        0: (None, None, None, None),
-        1: (None, None, None, None)
-    }
+    if last_row_found > img.height - 2:
+        last_row_found = 0  # Protect against streams suddenly losing a few rows
+    if last_row_found < 0:
+        last_row_found = 0
+
+    row_target = fixed_line or last_row_found
+    rows_found = []
 
     max_search = img.height - 2
     start_row_bad = False
@@ -668,14 +668,22 @@ def find_and_decode_fields(img, fixed_line=None):
 
     while row_idx < max_search:
         # first try to search from the previous good row
-        score, preamble_offset, b1, b2, b1_parity, b2_parity = decode_row(img, row_idx)
+        preamble_match = sync_to_preamble(img, row_idx)
 
-        if score is not None and score > 0.75:
-            fields_found[field_idx] = (b1, b2, b1_parity, b2_parity)
-            lastPreambleOffset = preamble_offset
+        if preamble_match is not None and preamble_match["score"] > 0.75:
+            b1, b1_parity, b2, b2_parity = decode_bytes(
+                preamble_match["normalized_line"],
+                preamble_match["preamble_start"],
+                preamble_match["preamble_end"],
+                preamble_match["bit_width"],
+                preamble_match["score"],
+            )
+            rows_found.append((row_idx, b1, b1_parity, b2, b2_parity))
+
+            lastPreambleOffset = preamble_match["preamble_start"]
 
             if field_idx == 0:
-                field_0_last_row = row_idx
+                last_row_found = row_idx
                 row_idx += 1
                 field_idx += 1
             else:
@@ -689,37 +697,31 @@ def find_and_decode_fields(img, fixed_line=None):
         else:
             row_idx += 1
 
-    return fields_found
+    return rows_found
 
 def extract_closed_caption_bytes(img, fixed_line=None):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
     # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
-    decoded_fields = {
-        0: (None, False, None, None, None, None),
-        1: (None, False, None, None, None, None)
-    }
-    for field_num, (byte1, byte2, byte1_parity, byte2_parity) in find_and_decode_fields(img, fixed_line).items():
-        if byte1 is None:
-            continue
-
-        control = (byte1, byte2) in ALL_CC_CONTROL_CODES
+    decoded_rows = []
+    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, fixed_line):
+        control = (b1, b2) in ALL_CC_CONTROL_CODES
     
         # handle parity errors
         # https://www.law.cornell.edu/cfr/text/47/79.101
-        if not byte2_parity:
+        if not b2_parity:
             if control:
                 continue
             else:
-                byte2 = 0x7f
+                b2 = 0x7f
 
-        if not byte1_parity:
+        if not b1_parity:
             control = False # treat this as a print character when parity fails
-            byte1 = 0x7f
+            b1 = 0x7f
 
-        code = decode_byte_pair(control, byte1, byte2)
-        decoded_fields[field_num] = (code, control, byte1, byte1_parity, byte2, byte2_parity)
+        code = decode_byte_pair(control, b1, b2)
+        decoded_rows.append((row_num, code, control, b1, b1_parity, b2, b2_parity))
 
-    return decoded_fields
+    return decoded_rows
     
 def get_output_function(extension, output_filename):
     if output_filename is not None:
@@ -753,22 +755,22 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
         except:
             break
 
-        for field_idx in range(len(rows)):
-            code, control, b1, b2, b1_parity, b2_parity = rows[field_idx]
+        for row in rows:
+            row_num, code, control, b1, _, b2, _ = row
 
             if code is None:
-                out_func('%i %i skip - no preamble' % (frame, field_idx))
+                out_func('%i %i skip - no preamble' % (frame, row_num))
             else:
                 if code and not control:
                     if merge_text:
                         buff += code
                     else:
-                        out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, code))
+                        out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, code))
                 elif buff:
-                    out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, buff))
+                    out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, buff))
                     buff = ''
                 if control:
-                    out_func('%i %i (%i,%i) - [%02x, %02x] - %s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, code))
+                    out_func('%i %i (%i,%i) - [%02x, %02x] - %s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, code))
         frame += 1
 
     if f is not None:
@@ -797,12 +799,13 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
         except:
             break
 
-        for field_idx in range(len(rows)):
-           code, control, b1, b2, b1_parity, b2_parity = rows[field_idx]
+        for row in rows:
+           row_num, code, _, b1, _, b2, _ = row
+
            if code is None:
-               out_func('%i %i skip - no preamble' % (frame, field_idx))
+               out_func('%i %i skip - no preamble' % (frame, row_num))
            else:
-               out_func('%i %i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, field_idx, lastPreambleOffset, field_0_last_row, b1, b2, code))
+               out_func('%i %i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, code))
                codes.append([b1, b2])
         frame += 1
     
@@ -843,7 +846,7 @@ class CaptionTrack:
             self.f_text.close()
 
     def add_data(self, data, frames):
-        code, _, byte1, _, byte2, _ = data
+        _, code, _, byte1, _, byte2, _ = data
         if code is not None and not (byte1 == 0 and byte2 == 0):
             is_global_code = self._handle_global_control(data, frames)
     
@@ -864,7 +867,7 @@ class CaptionTrack:
             self.prev_code = code
 
     def _handle_global_control(self, data, frames):
-        code, _, b1, byte1_parity, _, byte2_parity = data
+        _, code, _, b1, byte1_parity, _, byte2_parity = data
         
         if not (byte1_parity or byte2_parity):
             # ignore global control status when parity issues
@@ -904,6 +907,7 @@ class CaptionTrack:
                 self.global_start_text_mode(data, frames)
                 self.global_text_reset(data, frames)
             return True
+        # TODO: exclude all xds packets
         elif b1 != 0 and b1 <= 0x0e and self._field_number == 1: # XDS mode on second field only, ignore for caption writing
             self.global_start_xds_mode(data, frames)
             return True
@@ -918,7 +922,7 @@ class CaptionTrack:
         self.mode = "paint_on"
 
     def global_start_roll_up(self, data, frames):
-        code, _, _, _, byte2, _ = data
+        _, code, _, _, _, byte2, _ = data
 
         self.mode = "roll_up"
         self.roll_up_length = ROLL_UP_LEN[byte2]
@@ -1030,7 +1034,7 @@ class SCCCaptionTrack(CaptionTrack):
         self.write_caption([data], frames)
 
     def add_text(self, data, frames):
-        code, _, _, _, _, _ = data
+        _, code, _, _, _, _, _ = data
 
         self._text_buffer.append(data)
         if 'Carriage Return' in code:
@@ -1058,7 +1062,7 @@ class SCCCaptionTrack(CaptionTrack):
         return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
     
     def _get_subtitle_data(self, data):
-        _, _, byte1, _, byte2, _ = data
+        _, _, _, byte1, _, byte2, _ = data
         return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
     
 class TextCaptionTrack(CaptionTrack):
@@ -1087,7 +1091,7 @@ class TextCaptionTrack(CaptionTrack):
         caption_text = ""
         has_printable = False
         
-        for (code, control, byte1, byte1_parity, byte2, byte2_parity) in data:
+        for (_, code, control, byte1, byte1_parity, byte2, byte2_parity) in data:
             # add a line break if row advances
             if control:
                 # ignore control codes with bad parity
@@ -1129,7 +1133,7 @@ class TextCaptionTrack(CaptionTrack):
     
     # only enable text for .txt format
     def add_text(self, data, frames):
-        code, _, _, _, _, _ = data
+        _, code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code and code == self.prev_code:
             self.write_text(self._text_buffer, frames)
@@ -1230,7 +1234,7 @@ class SRTCaptionTrack(TextCaptionTrack):
         #    self.subtitle_start_frame = frames
 
     def add_text(self, data, frames):
-        code, _, _, _, _, _ = data
+        _, code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code and code == self.prev_code:
             self.write_text(self._text_buffer, frames)
@@ -1285,13 +1289,17 @@ class CaptionTrackFactory():
     def __init__(self, track_class, output_filename):
         self.current_track = None
 
+        # keep track of which field is assigned to a track here
+        # once rows are assigned, do not change the field assigned
+
         self._tracks = {}
         self._output_filename = output_filename
         self._track_class = track_class
 
     def set_current_track(self, data):
-        code, control, _, byte1_parity, _, byte2_parity = data
-        if control and byte1_parity and byte2_parity:
+        _, code, control, _, b1_parity, _, b2_parity = data
+
+        if control and b1_parity and b2_parity:
             cc_track = code[:3]
 
             if cc_track in CC_CHANNEL_TO_FIELD:
@@ -1324,18 +1332,13 @@ def decode_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
             rows = rx.recv()
             if rows == "DONE":
                 break
-            field0 = rows[0]
-            field1 = rows[1]
         except:
             break
 
-        track_factory.set_current_track(field0)
-        if track_factory.current_track is not None:
-            track_factory.current_track.add_data(field0, frame)
-
-        track_factory.set_current_track(field1)
-        if track_factory.current_track is not None:
-            track_factory.current_track.add_data(field1, frame)
+        for row in rows:
+            track_factory.set_current_track(row)
+            if track_factory.current_track is not None:
+                track_factory.current_track.add_data(row, frame)
 
         frame += 1
 
@@ -1359,18 +1362,13 @@ def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
             rows = rx.recv()
             if rows == "DONE":
                 break
-            field0 = rows[0]
-            field1 = rows[1]
         except:
             break
 
-        track_factory.set_current_track(field0)
-        if track_factory.current_track is not None:
-            track_factory.current_track.add_data(field0, frame)
-
-        track_factory.set_current_track(field1)
-        if track_factory.current_track is not None:
-            track_factory.current_track.add_data(field1, frame)
+        for row in rows:
+            track_factory.set_current_track(row)
+            if track_factory.current_track is not None:
+                track_factory.current_track.add_data(row, frame)
     
         frame += 1
 
@@ -1386,18 +1384,13 @@ def decode_to_text(rx, fixed_line=None, ccfilter=None, output_filename=None):
             rows = rx.recv()
             if rows == "DONE":
                 break
-            field0 = rows[0]
-            field1 = rows[1]
         except:
             break
 
-        track_factory.set_current_track(field0)
-        if track_factory.current_track is not None:
-            track_factory.current_track.add_data(field0, frame)
-
-        track_factory.set_current_track(field1)
-        if track_factory.current_track is not None:
-            track_factory.current_track.add_data(field1, frame)
+        for row in rows:
+            track_factory.set_current_track(row)
+            if track_factory.current_track is not None:
+                track_factory.current_track.add_data(row, frame)
     
         frame += 1
 
@@ -1619,34 +1612,31 @@ def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None)
             rows = rx.recv()
             if rows == "DONE":
                 break
-            field0 = rows[0]
-            field1 = rows[1]
         except:
             break
 
-        # try CC3, CC4 first, otherwise try CC1, CC2
-        data = field0 if field1[0] is None else field1
-
-        # skip CC1, CC2
         frame += 1
-        code, control, b1, b1_parity, b2, b2_parity = data
-        if code is not None:
-            if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
-                if b1 <= 0x0e:  # Start of XDS packet'
-                    gather_xds_bytes = True
-                if gather_xds_bytes:
-                    packetbuf.append((b1, b2))
-                if b1 == 0x0f:  # End of XDS packet
-                    gather_xds_bytes = False
-                    try:
-                        if out_func == None:
-                            out_func, f = get_output_function("xds", output_filename)
 
-                        out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
-                    except KeyError as e:
-                        print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
-                        pass
-                    packetbuf = []
+        # try CC3, CC4 first, otherwise try CC1, CC2
+        for row in rows[::1]:
+            row_num, code, control, b1, b1_parity, b2, b2_parity = row
+            if code is not None:
+                if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
+                    if b1 <= 0x0e:  # Start of XDS packet'
+                        gather_xds_bytes = True
+                    if gather_xds_bytes:
+                        packetbuf.append((b1, b2))
+                    if b1 == 0x0f:  # End of XDS packet
+                        gather_xds_bytes = False
+                        try:
+                            if out_func == None:
+                                out_func, f = get_output_function("xds", output_filename)
+
+                            out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
+                        except KeyError as e:
+                            print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
+                            pass
+                        packetbuf = []
     
     if f is not None:
         f.close()
