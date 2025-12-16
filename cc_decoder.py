@@ -79,7 +79,7 @@ import subprocess
 import sys
 import multiprocessing
 from setproctitle import setproctitle
-import signal
+import time
 from lib.cc_decode import (
     decode_to_srt,
     decode_captions_raw,
@@ -101,7 +101,7 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, text_tc1=False, fixed_line=None, ccfilter=0):
+    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, text_tc1=False, fixed_line=None, quiet=False):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
         self.deinterlaced = deinterlaced
@@ -111,7 +111,7 @@ class ClosedCaptionFileDecoder(object):
         self.fpid = None
         self.start_line = start_line
         self.workingdir = ''
-        self.ccfilter=ccfilter
+        self.quiet = quiet
 
         self.image_width = 720
         self.image_height = lines
@@ -127,6 +127,13 @@ class ClosedCaptionFileDecoder(object):
         first_row_len = 0
         code_count = 0
 
+        # rate tracking
+        prev_row_ts = time.perf_counter_ns()
+        curr_row_ts = prev_row_ts
+        frames_per_second = 29.97
+        rate_update_interval = 50
+        decode_rate = 0
+
         while True:
             try:
                 data = rx.recv()
@@ -137,8 +144,14 @@ class ClosedCaptionFileDecoder(object):
     
             frame, rows = data
 
+            if frame % rate_update_interval == 0:
+                curr_row_ts = time.perf_counter_ns()
+                elapsed_seconds = (curr_row_ts - prev_row_ts) / 1e9
+                prev_row_ts = curr_row_ts
+                decode_rate = rate_update_interval / frames_per_second / elapsed_seconds
+
             print(" " * len(message) + "\r", end="", file=sys.stderr)
-            message = f"Frame: {frame} | Code Count: {code_count}"
+            message = f"Frame: {frame} | Code Count: {code_count} | Rate: {decode_rate:.2f}x"
 
             for i, (row_num, code, control, b1, _, b2, _) in enumerate(rows):
                 if i == 1:
@@ -243,12 +256,13 @@ class ClosedCaptionFileDecoder(object):
             )
             image_decoder_process.start()
 
-            status_rx, status_tx = multiprocessing.Pipe(False)
-            print_status_process = multiprocessing.Process(
-                None, ClosedCaptionFileDecoder.print_status_worker, name=f"cc_decoder_print_status",
-                args=(status_rx,)
-            )
-            print_status_process.start()
+            if not self.quiet:
+                status_rx, status_tx = multiprocessing.Pipe(False)
+                print_status_process = multiprocessing.Process(
+                    None, ClosedCaptionFileDecoder.print_status_worker, name=f"cc_decoder_print_status",
+                    args=(status_rx,)
+                )
+                print_status_process.start()
 
             try:
                 while True:
@@ -264,7 +278,8 @@ class ClosedCaptionFileDecoder(object):
                         conn.send(rows)
                     
                     # send data to status process
-                    status_tx.send((self.frame_count, rows))
+                    if not self.quiet:
+                        status_tx.send((self.frame_count, rows))
 
                     self.frame_count += 1
             except Exception as e:
@@ -281,12 +296,13 @@ class ClosedCaptionFileDecoder(object):
                     decoder.join()
                 
                 # clean up status output
-                try:
-                    status_tx.send("DONE")
-                except:
-                    print_status_process.terminate()
+                if not self.quiet:
+                    try:
+                        status_tx.send("DONE")
+                    except:
+                        print_status_process.terminate()
+                    print_status_process.join()
 
-                print_status_process.join()
             if exception is not None:
                 print("", file=sys.stderr)
                 print("Error decoding, check the exception above.", file=sys.stderr)
@@ -303,7 +319,8 @@ def main():
 
     ffmpeg = shutil.which("ffmpeg")
     p.add_argument('videofile', help='Input video file name. Should be: 720 pixels wide, 29.97 fps NTSC interlaced. See `--ffmpeg_pre_scale` and `--ffmpeg_post_scale` if needing to transform the video file to these specifications.')
-    p.add_argument('-o', default=None, help='Output subtitle filename without extension (omit to print to stdout)')
+    p.add_argument('-o', required=True, help='Output subtitle filename without extension')
+    p.add_argument('-q', default=False, action='store_true', help='Suppress status output')
     p.add_argument('--ffmpeg', default=ffmpeg, help='Path to a copy of the ffmpeg binary (default %s)' % ffmpeg)
     p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling. Useful if additional scaling should happen before the video is scaled to 720 width.')
     p.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is de-interlaced')
@@ -320,6 +337,7 @@ def main():
                                            deinterlaced=args.deinterlaced,
                                            ccformat=args.ccformat,
                                            lines=args.lines,
+                                           quiet=args.q,
                                            text_tc1=args.text_tc1,
                                            start_line=args.start_line)
         exit(decoder.decode(args.videofile, args.o))
