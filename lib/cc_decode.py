@@ -341,19 +341,37 @@ XDS_CAPTION_SERVICES = [
 ]
 
 WEATHER_CATEGORY_CODES = {
-    'TOA': 'Tornado Watch',                 'TOR': 'Tornado Warning',
-    'SVA': 'Severe Thunderstorm Watch',     'SVR': 'Severe Thunderstorm Warning',
-    'SVS': 'Severe Weather Statement',      'SPS': 'Special Weather Statement',
-    'FFA': 'Flash Flood Watch',             'FFW': 'Flash Flood Warning',
-    'FFS': 'Flash Flood Statement',         'FLA': 'Flood Watch',
-    'FLW': 'Flood Warning ',                'FLS': 'Flood Statement',
-    'WSA': 'Winter Storm Watch',            'WSW': 'Winter Storm Warning',
-    'BZW': 'Blizzard Warning',              'HWA': 'High Wind Watch',
-    'HWW': 'High Wind Warning',             'HUA': 'Hurricane Watch',
-    'HUW': 'Hurricane Warning',             'HLS': 'Hurricane Statement',
-    'LFP': 'Service Area Forecast',         'BRT': 'Composite Broadcast Statement',
-    'CEM': 'Civil Emergency Message',       'DMO': 'Practice/Demo Warning',
-    'ADR': 'Administrative Message'
+    'EAN': 'Emergency Action Notification (National only)',
+    'EAT': 'Emergency Action Termination (National only)',
+    'NIC': 'National Information Center',
+    'NPT': 'National Periodic Test',
+    'RMT': 'Required Monthly Test',
+    'RWT': 'Required Weekly Test',
+    'ADR': 'Administrative Message',      'HUA': 'Hurricane Watch',
+    'AVW': 'Avalanche Warning',           'HUW': 'Hurricane Warning',
+    'AVA': 'Avalanche Watch',             'LAE': 'Local Area Emergency',
+    'BZW': 'Blizzard Warning',            'LEW': 'Law Enforcement Warning',
+    'CAE': 'Child Abduction Emergency',   'NMN': 'Network Message Notification',
+    'CDW': 'Civil Danger Warning',        'NUW': 'Nuclear Power Plant Warning',
+    'CEM': 'Civil Emergency Message',     'RHW': 'Radiological Hazard Warning',
+    'CFW': 'Coastal Flood Warning',       'SMW': 'Special Marine Warning',
+    'CFA': 'Coastal Flood Watch',         'SPS': 'Special Weather Statement',
+    'DFW': 'Dust Storm Warning',          'SPW': 'Shelter in Place Warning',
+    'DMO': 'Practice/Demo Warning',       'SVA': 'Severe Thunderstorm Watch',
+    'EQW': 'Earthquake Warning',          'SVR': 'Severe Thunderstorm Warning',
+    'EVI': 'Evacuation Immediate',        'SVS': 'Severe Weather Statement',
+    'FFA': 'Flash Flood Watch',           'TOA': 'Tornado Watch',
+    'FFS': 'Flash Flood Statement',       'TOE': '911 Telephone Outage Emergency',
+    'FFW': 'Flash Flood Warning',         'TOR': 'Tornado Warning',
+    'FLA': 'Flood Watch',                 'TRA': 'Tropical Storm Watch',
+    'FLS': 'Flood Statement',             'TRW': 'Tropical Storm Warning',
+    'FLW': 'Flood Warning',               'TSA': 'Tsunami Watch',
+    'FRW': 'Fire Warning',                'TSW': 'Tsunami Warning',
+    'HLS': 'Hurricane Statement',         'VOW': 'Volcano Warning',
+    'HMW': 'Hazardous Materials Warning', 'WSA': 'Winter Storm Watch',
+    'HWA': 'High Wind Watch',             'WSW': 'Winter Storm Warning',
+    'HWW': 'High Wind Warning',
+    'LFP': 'Service Area Forecast',       'BRT': 'Composite Broadcast Statement',
 }
 
 XDS_CGMS = [
@@ -731,7 +749,7 @@ def get_output_function(extension, output_filename):
 
     return out_func, f
 
-def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, output_filename=None):
+def decode_captions_raw(rx, output_filename, options):
     """ Raw output, show the frame caption codes and frame numbers
          rx                 - input connection for decoded cc data
          merge_text         - merge runs of text together and display in a block
@@ -760,10 +778,7 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
                 out_func('%i %i skip - no preamble' % (frame, row_num))
             else:
                 if code and not control:
-                    if merge_text:
-                        buff += code
-                    else:
-                        out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, code))
+                    buff += code
                 elif buff:
                     out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, buff))
                     buff = ''
@@ -774,14 +789,7 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
     if f is not None:
         f.close()
 
-def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=None):
-    """ Debug output, show the frame caption codes and frame numbers
-         rx                 - input connection for decoded cc data
-         image_list         - list (or generator) of image objects with a get_pixel_luma method
-         fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored
-         output_filename    - file name without extension to save decoded captions
-    """
+def decode_captions_debug(rx, output_filename, options):
     setproctitle(current_process().name)
     frame = 0
     codes = []
@@ -812,10 +820,11 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
     return codes
 
 class CaptionTrack:
-    def __init__(self, cc_track, output_filename, extension):
+    def __init__(self, cc_track, output_filename, options, extension):
         self._cc_track = cc_track
         self._field_number = CC_CHANNEL_TO_FIELD[self._cc_track]
         self._output_filename = output_filename
+        self._options = options
         self._extension = extension
 
         self.prev_code = None
@@ -967,8 +976,8 @@ class CaptionTrack:
             self.open()
 
 class SCCCaptionTrack(CaptionTrack):
-    def __init__(self, cc_track, output_filename):
-        super().__init__(cc_track, output_filename, "scc")
+    def __init__(self, cc_track, output_filename, options):
+        super().__init__(cc_track, output_filename, options, "scc")
     
     def open(self):
         super().open()
@@ -1052,10 +1061,12 @@ class SCCCaptionTrack(CaptionTrack):
         return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
     
 class TextCaptionTrack(CaptionTrack):
-    def __init__(self, cc_track, output_filename, extension = "txt"):
-        super().__init__(cc_track, output_filename, extension)
+    def __init__(self, cc_track, output_filename, options, extension = "txt"):
+        super().__init__(cc_track, output_filename, options, extension)
 
         self.prev_char = None
+        self.previous_frames = 0
+        self.enable_tc1_compatibility = self._options['text_tc1']
 
     def global_text_reset(self, data, frames):
         self._write(self._text_buffer)
@@ -1121,11 +1132,23 @@ class TextCaptionTrack(CaptionTrack):
     def add_text(self, data, frames):
         _, code, _, _, _, _, _ = data
 
+        # compatibility with TeleCaption I decoder
+        # when there's a data interruption, the decoder resets the cursor to first column
+        # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
+        if (
+            self.previous_frames != frames - 1
+            and not 'Carriage Return' in code
+            and self.enable_tc1_compatibility
+        ):
+            self._text_buffer = []
+
         if 'Carriage Return' in code and code == self.prev_code:
             self.write_text(self._text_buffer, frames)
             self._text_buffer = []
         else:
             self._text_buffer.append(data)
+
+        self.previous_frames = frames
 
     def write_text(self, data, frames):
         caption_text, has_printable = self.get_caption_text(data)
@@ -1144,8 +1167,8 @@ class TextCaptionTrack(CaptionTrack):
         pass
     
 class SRTCaptionTrack(TextCaptionTrack):
-    def __init__(self, cc_track, output_filename):
-        super().__init__(cc_track, output_filename, "srt")
+    def __init__(self, cc_track, output_filename, options):
+        super().__init__(cc_track, output_filename, options, "srt")
 
         self.subtitle_count = 1
         self.subtitle_start_frame = 0
@@ -1272,12 +1295,13 @@ class SRTCaptionTrack(TextCaptionTrack):
         return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
 
 class CaptionTrackFactory():
-    def __init__(self, track_class, output_filename):
+    def __init__(self, track_class, output_filename, options):
         self._field_to_active_track = [None, None] # stores the active track for each field
         self._tracks = {} # stores the created tracks
         self._row_to_field = {} # maps the row to the detected field
         self._output_filename = output_filename
         self._track_class = track_class
+        self._options = options
 
     def add_data(self, rows, frame):
         for row in rows:
@@ -1294,7 +1318,7 @@ class CaptionTrackFactory():
 
                     # create new track from CC channel, if not existing
                     if cc_track not in self._tracks:
-                        self._tracks[cc_track] = self._track_class(cc_track, self._output_filename)
+                        self._tracks[cc_track] = self._track_class(cc_track, self._output_filename, self._options)
 
                     self._field_to_active_track[detected_field] = self._tracks[cc_track]
 
@@ -1315,17 +1339,9 @@ class CaptionTrackFactory():
         for track in self._tracks.values():
             track.close()
 
-def decode_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
-    """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
-        Assumes 29.97 frames per second drop time-code
-         rx                 - input connection for decoded cc data
-         image_list         - list of image file paths
-         fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored
-         output_filename    - file name without extension to save decoded captions
-    """
+def decode_to_scc(rx, output_filename, options):
     setproctitle(current_process().name)
-    track_factory = CaptionTrackFactory(SCCCaptionTrack, output_filename)
+    track_factory = CaptionTrackFactory(SCCCaptionTrack, output_filename, options)
         
     frame = 0        
     while True:
@@ -1341,17 +1357,9 @@ def decode_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
 
     track_factory.close_tracks()
 
-def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
-    """ Decode a passed list of images to a stream of SCC subtitles. Assumes Pop-on format closed captions.
-        Assumes 29.97 frames per second drop time-code
-         rx                 - input connection for decoded cc data
-         image_list         - list of image file paths
-         fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored
-         output_filename    - file name without extension to save decoded captions
-    """
+def decode_to_srt(rx, output_filename, options):
     setproctitle(current_process().name)
-    track_factory = CaptionTrackFactory(SRTCaptionTrack, output_filename)
+    track_factory = CaptionTrackFactory(SRTCaptionTrack, output_filename, options)
         
     frame = 0        
     while True:
@@ -1367,9 +1375,9 @@ def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
 
     track_factory.close_tracks()
 
-def decode_to_text(rx, fixed_line=None, ccfilter=None, output_filename=None):
+def decode_to_text(rx, output_filename, options):
     setproctitle(current_process().name)
-    track_factory = CaptionTrackFactory(TextCaptionTrack, output_filename)
+    track_factory = CaptionTrackFactory(TextCaptionTrack, output_filename, options)
         
     frame = 0        
     while True:
@@ -1443,17 +1451,15 @@ def decode_xds_time_of_day(packet_bytes):
     hours = pbytes[1] & 0x1F
     return f'TM {hours:0>2}:{minutes:0>2}{dst} {zero_seconds}{tape_delayed}{leap_day} {month} {day_of_month:0>2} {year} {day_of_week}'
 
-def decode_xds_local_time_zone(packet_bytes):
+def decode_xds_local_time_zone(pbytes):
     """ Decode the Local Time Zone packets """
-    _assert_len(packet_bytes, 4)
-    pbytes = [b for bytepair in packet_bytes for b in bytepair]  # Flatten the nested list
-    # daylight savings or standard time
-    dst = 'D' if (pbytes[1] & 0x20) else 'S'
-    dst_add = 0x20 if (pbytes[1] & 0x20) else 0
+    _assert_len(pbytes, 2)
+    data, _ = pbytes.pop(0)
 
-    # time zone hour
-    tz = 24 - pbytes[0] + dst_add + 0x40
-    return f'TZ {tz}{dst}'
+    tz = data & 0b11111
+    dst = 'DST' if (data & 0b100000) else 'ST'
+
+    return f'TZ {tz} {dst}'
 
 def decode_xds_content_advisory(pbytes):
     """ Decode content advisory packet, returning a string describing the rating """
@@ -1513,7 +1519,6 @@ def describe_xds_packet(packet_bytes):
             elif b2 == 0x03:  # Program Name
                 return 'XDS %s Program Name: %s' % (pref, decode_xds_string(packet_bytes))
         if b1 == 0x01:
-
             if b2 == 0x04:  # Program Type
                 program_genre = ''
                 while packet_bytes:
@@ -1533,7 +1538,7 @@ def describe_xds_packet(packet_bytes):
                 return 'XDS Audio Services: Main:%s(%s) Sap:%s(%s)' % (main_language, main_type, sap_language, sap_type)
             elif b2 == 0x07:  # Caption services
                 return 'XDS Caption Services'  # TODO
-            elif b2 == 0x08:  # CGMS
+            elif b2 == 0x08:  # Copy and Redistribution Control Packe
                 _assert_len(packet_bytes, 2)
                 c1, _ = packet_bytes.pop(0)
                 copying = XDS_CGMS[c1 & 24 >> 3]
@@ -1556,19 +1561,33 @@ def describe_xds_packet(packet_bytes):
                 return 'XDS Program description line: %i :%s ' % ((b2 - 0x0F), decode_xds_string(packet_bytes))
 
         if b1 == 0x05:  # Channel Information class
-            if b2 == 0x01:  # Channel name
+            if b2 == 0x01:  # Network Name (Affiliation)
                 return 'XDS Channel Name: %s' % decode_xds_string(packet_bytes)
-            if b2 == 0x02:  # Station call-sign
+            if b2 == 0x02:  # Call Letters (Station ID) and Native Channel 
                 return 'XDS Channel Station Call-Sign: %s' % decode_xds_string(packet_bytes)
             if b2 == 0x03:  # Tape delay
                 minutes, hours = decode_xds_minutes_hours(packet_bytes, short=True)
                 return 'XDS Channel Tape Delay: %02i:%02i' % (hours, minutes)
+            if b2 == 0x04:
+                return 'XDS Transmission Signal Identifier (TSID)'
 
         if b1 == 0x07:  # Misc
             if b2 == 0x01:  # Time of day
                 return f'XDS Time of day (UTC): {decode_xds_time_of_day(packet_bytes)}'
+            if b2 == 0x02:  # Impulse Capture ID
+                return 'XDS Impulse Capture ID'
+            if b2 == 0x03:  # Supplemental Data Location
+                return 'XDS Supplemental Data Location'
             if b2 == 0x04:  # Local Time Zone
                 return f'XDS Local Time Zone: {decode_xds_local_time_zone(packet_bytes)}'
+            if b2 == 0x40:  # Out-of-Band Channel Number
+                return 'XDS Out-of-Band Channel Number'
+            if b2 == 0x41:  # Channel Map Pointer
+                return 'XDS Channel Map Pointer'
+            if b2 == 0x42:  # Channel Map Header Packet
+                return 'XDS Channel Map Header Packet'
+            if b2 == 0x43:  # Channel Map Packet
+                return 'XDS Channel Map Packet'
 
 
         if b1 == 0x09:  # Public service
@@ -1581,13 +1600,7 @@ def describe_xds_packet(packet_bytes):
     return 'XDS - Empty Packet'
 
 
-def decode_xds_packets(rx, fixed_line=None, ccfilter=None, output_filename=None):
-    """ Decode a passed list of images to a stream of XDS packets.
-         rx                 - input connection for decoded cc data
-         fixed_line         - check a particular line for cc-signal (and no others)
-         ccfilter           - ignored
-         output_filename    - file name without extension to save decoded captions
-    """
+def decode_xds_packets(rx, fixed_line=None, output_filename=None):
     setproctitle(current_process().name)
     frame = 0
     packetbuf = []

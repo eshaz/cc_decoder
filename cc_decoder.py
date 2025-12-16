@@ -114,7 +114,7 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, temp_path=None, ccformat=None, start_line=0, lines=10, fixed_line=None, ccfilter=0):
+    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, temp_path=None, ccformat=None, start_line=0, lines=10, text_tc1=False, fixed_line=None, ccfilter=0):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
         self.deinterlaced = deinterlaced
@@ -122,6 +122,7 @@ class ClosedCaptionFileDecoder(object):
         self.format = ccformat or 'srt'
         self.lines = lines
         self.fixed_line = fixed_line
+        self.text_tc1 = text_tc1
         self.fpid = None
         self.start_line = start_line
         self.workingdir = ''
@@ -205,7 +206,10 @@ class ClosedCaptionFileDecoder(object):
                 decoder_func = self.DECODERS.get(format)
 
                 rx, tx = multiprocessing.Pipe(False)
-                decoder = multiprocessing.Process(None, decoder_func, name=f"cc_decoder_{format}", args=(rx,), kwargs={"ccfilter": self.ccfilter, "output_filename": output_filename})
+                options = {
+                    'text_tc1': self.text_tc1
+                }
+                decoder = multiprocessing.Process(None, decoder_func, name=f"cc_decoder_{format}", args=(rx,output_filename,options,))
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
@@ -283,21 +287,21 @@ def main():
     p.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is de-interlaced')
     p.add_argument('--temp', default=tempdir, help='Path to temporary working area (default %s)' % tempdir)
     p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, text (T1-4 only), raw or debug (default srt)')
-    p.add_argument('--lines', default=10, type=int,
-        help='Number of lines to search for CC in the video, starting at the start line (default 10)')
+    p.add_argument('--lines', default=10, type=int, help='Number of lines to search for CC in the video, starting at the start line (default 10)')
     p.add_argument('--start_line', default=0, type=int, help='Start at a particular line 0=topmost line')
-    p.add_argument('--bitlevel', default=80, type=int,
-        help='The R+G+B/3 level that ccdecode reads as "1". 97 according to spec (50 IRE +/- 12 = 38 IRE),' +
-            'but we default to 80 (29 IRE) which is seems to work well, adjust lower if your source material is dim.')
+    p.add_argument('--text_tc1', default=False, action='store_true', help='Enables TeleCaption I text mode compatibility. Specify if there is occasional repeated text')
 
     args = p.parse_args()
 
-    # Set video level
-    lib.cc_decode.LUMA_THRESHOLD = args.bitlevel
-
     if args.videofile:
-        decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg, ffmpeg_pre_scale=args.ffmpeg_pre_scale, deinterlaced=args.deinterlaced, temp_path=args.temp, ccformat=args.ccformat,
-                                           lines=args.lines, start_line=args.start_line)
+        decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg,
+                                           ffmpeg_pre_scale=args.ffmpeg_pre_scale,
+                                           deinterlaced=args.deinterlaced,
+                                           temp_path=args.temp,
+                                           ccformat=args.ccformat,
+                                           lines=args.lines,
+                                           text_tc1=args.text_tc1,
+                                           start_line=args.start_line)
         exit(decoder.decode(args.videofile, args.o))
 
 main()
