@@ -240,7 +240,7 @@ class ClosedCaptionFileDecoder(object):
 
                         caption_count += 1
                     
-                    print(message, end="", file=sys.stderr)
+                    print(message, end="\r", file=sys.stderr)
 
                     for conn in running_decoders_conns:
                         conn.send(rows)

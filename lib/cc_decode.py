@@ -542,7 +542,6 @@ def sync_to_preamble(img, row):
         "score": best_score,
     }
 
-
 def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score):
     # fraction of data to remove at edges of each detected bit
     bit_width_padding = 0.1
@@ -644,7 +643,6 @@ def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_paddin
     plt.title('Line waveform with sine wave and decoded bits')
     plt.legend()
     plt.show()
-
 
 def find_and_decode_rows(img, fixed_line=None):
     """ Search for a closed caption row in the passed image, if one is present decode and return the bytes present """
@@ -776,7 +774,6 @@ def decode_captions_raw(rx, fixed_line=None, merge_text=False, ccfilter=None, ou
     if f is not None:
         f.close()
 
-
 def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=None):
     """ Debug output, show the frame caption codes and frame numbers
          rx                 - input connection for decoded cc data
@@ -813,7 +810,6 @@ def decode_captions_debug(rx, fixed_line=None, ccfilter=None, output_filename=No
         f.close()
     
     return codes
-
 
 class CaptionTrack:
     def __init__(self, cc_track, output_filename, extension):
@@ -852,7 +848,10 @@ class CaptionTrack:
     
             # write code
             if not is_global_code:
-                if self.mode == "pop_on":
+                if byte1 <= 0x0f and byte1 > 0x00:
+                    # filter out xds
+                    pass
+                elif self.mode == "pop_on":
                     self.add_off_screen(data)
                 elif self.mode == "paint_on":
                     self.add_on_screen(data, frames)
@@ -860,9 +859,6 @@ class CaptionTrack:
                     self.add_on_screen_roll_up(data, frames)
                 elif self.mode == "text":
                     self.add_text(data, frames)
-                elif self.mode == "xds":
-                    # ignore
-                    pass
     
             self.prev_code = code
 
@@ -907,10 +903,6 @@ class CaptionTrack:
                 self.global_start_text_mode(data, frames)
                 self.global_text_reset(data, frames)
             return True
-        # TODO: exclude all xds packets
-        elif b1 != 0 and b1 <= 0x0e and self._field_number == 1: # XDS mode on second field only, ignore for caption writing
-            self.global_start_xds_mode(data, frames)
-            return True
         else:
             # not a global code
             return False
@@ -933,9 +925,6 @@ class CaptionTrack:
         self.mode = "text"
         if self.f_text is None:
             self.open_text()
-
-    def global_start_xds_mode(self, data, frames):
-        self.mode = "xds"
 
     def global_text_reset(self, data, frames):
         raise NotImplemented
@@ -1002,9 +991,6 @@ class SCCCaptionTrack(CaptionTrack):
     def global_start_text_mode(self, data, frames):
         super().global_start_text_mode(data, frames)
         self.write_text([data], frames)
-
-    def global_start_xds_mode(self, data, frames):
-        super().global_start_xds_mode(data, frames)
 
     def global_text_reset(self, data, frames):
         self.add_text(self, data, frames)
@@ -1287,28 +1273,43 @@ class SRTCaptionTrack(TextCaptionTrack):
 
 class CaptionTrackFactory():
     def __init__(self, track_class, output_filename):
-        self.current_track = None
-
-        # keep track of which field is assigned to a track here
-        # once rows are assigned, do not change the field assigned
-
-        self._tracks = {}
+        self._field_to_active_track = [None, None] # stores the active track for each field
+        self._tracks = {} # stores the created tracks
+        self._row_to_field = {} # maps the row to the detected field
         self._output_filename = output_filename
         self._track_class = track_class
 
-    def set_current_track(self, data):
-        _, code, control, _, b1_parity, _, b2_parity = data
+    def add_data(self, rows, frame):
+        for row in rows:
+            detected_field = None
+            row_num, code, _, b1, b1_parity, _, b2_parity = row
 
-        if control and b1_parity and b2_parity:
-            cc_track = code[:3]
+            # determine field for row
+            if b1_parity and b2_parity:
+                cc_track = code[:3]
+                if cc_track in CC_CHANNEL_TO_FIELD:
+                    # cc channels have a defined field order
+                    detected_field = CC_CHANNEL_TO_FIELD[cc_track]
+                    self._row_to_field[row_num] = detected_field
 
-            if cc_track in CC_CHANNEL_TO_FIELD:
-                # create a new track and file if it is a new stream
-                if cc_track not in self._tracks:        
-                    self._tracks[cc_track] = self._track_class(cc_track, self._output_filename)
-                
-                # set the current stream
-                self.current_track = self._tracks[cc_track]
+                    # create new track from CC channel, if not existing
+                    if cc_track not in self._tracks:
+                        self._tracks[cc_track] = self._track_class(cc_track, self._output_filename)
+
+                    self._field_to_active_track[detected_field] = self._tracks[cc_track]
+
+                elif b1 < 0x0f and b1 > 0x00:
+                    # xds data is always field 1
+                    detected_field = 1
+                    self._row_to_field[row_num] = detected_field
+
+            # add data
+            if row_num in self._row_to_field:
+                current_field = self._row_to_field[row_num]
+                current_track = self._field_to_active_track[current_field]
+
+                if current_track is not None:
+                    current_track.add_data(row, frame)
 
     def close_tracks(self):
         for track in self._tracks.values():
@@ -1335,11 +1336,7 @@ def decode_to_scc(rx, fixed_line=None, ccfilter=None, output_filename=None):
         except:
             break
 
-        for row in rows:
-            track_factory.set_current_track(row)
-            if track_factory.current_track is not None:
-                track_factory.current_track.add_data(row, frame)
-
+        track_factory.add_data(rows, frame)
         frame += 1
 
     track_factory.close_tracks()
@@ -1365,11 +1362,7 @@ def decode_to_srt(rx, fixed_line=None, ccfilter=None, output_filename=None):
         except:
             break
 
-        for row in rows:
-            track_factory.set_current_track(row)
-            if track_factory.current_track is not None:
-                track_factory.current_track.add_data(row, frame)
-    
+        track_factory.add_data(rows, frame)
         frame += 1
 
     track_factory.close_tracks()
@@ -1387,11 +1380,7 @@ def decode_to_text(rx, fixed_line=None, ccfilter=None, output_filename=None):
         except:
             break
 
-        for row in rows:
-            track_factory.set_current_track(row)
-            if track_factory.current_track is not None:
-                track_factory.current_track.add_data(row, frame)
-    
+        track_factory.add_data(rows, frame)
         frame += 1
 
     track_factory.close_tracks()
