@@ -78,6 +78,7 @@ import shutil
 import subprocess
 import sys
 import multiprocessing
+from setproctitle import setproctitle
 import signal
 from lib.cc_decode import (
     decode_to_srt,
@@ -105,7 +106,6 @@ class ClosedCaptionFileDecoder(object):
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
         self.deinterlaced = deinterlaced
         self.format = ccformat or 'srt'
-        self.lines = lines
         self.fixed_line = fixed_line
         self.text_tc1 = text_tc1
         self.fpid = None
@@ -113,117 +113,180 @@ class ClosedCaptionFileDecoder(object):
         self.workingdir = ''
         self.ccfilter=ccfilter
 
-    def start_ffmpeg(self, input_file, start_line=0, lines=10):
-        if not os.path.exists(self.ffmpeg_path):
-            raise RuntimeError('Could not find ffmpeg at %s' % self.ffmpeg_path)
-
         self.image_width = 720
         self.image_height = lines
-        self.image_size = self.image_width * self.image_height
+        self.caption_count = 0
+        self.frame_count = 0
 
-        ffmpeg_cmd = [
-            self.ffmpeg_path, "-i", input_file, 
-            "-vf", 
-            f"{self.ffmpeg_pre_scale}scale={self.image_width}:-1:flags=neighbor,crop=iw:{start_line + lines}:0:{start_line}{',interlace=lowpass=off' if self.deinterlaced else ''}",
-            "-f", "rawvideo",
-            "-pix_fmt", "gray8",
-            "pipe:1"
-        ]
+    @staticmethod
+    def print_status_worker(rx):
+        setproctitle(multiprocessing.current_process().name)
 
-        self.fpid = subprocess.Popen(
-            ffmpeg_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-
-    def print_status(self, rows):
+        message = ""
+        max_first_row_len = 0
         first_row_len = 0
+        code_count = 0
 
-        print(" " * len(self.message) + "\r", end="", file=sys.stderr)
-        self.message = f"Frame: {self.frame_count} | Code Count: {self.caption_count}"
+        while True:
+            try:
+                data = rx.recv()
+                if data == "DONE":
+                    break
+            except:
+                break
+    
+            frame, rows = data
 
-        for i, (row_num, code, control, b1, _, b2, _) in enumerate(rows):
-            if i == 1:
-                # pad message to consistent width
-                self.message = self.message + " " * (self.max_first_row_len - first_row_len)
+            print(" " * len(message) + "\r", end="", file=sys.stderr)
+            message = f"Frame: {frame} | Code Count: {code_count}"
 
-            self.message = self.message + f" | Line: {row_num} | Control: {'True ' if control else 'False'} | Byte1: {hex(b1)} | Byte2: {hex(b2)} {'| ' + code if code != "" else ""}"
+            for i, (row_num, code, control, b1, _, b2, _) in enumerate(rows):
+                if i == 1:
+                    # pad message to consistent width
+                    message = message + " " * (max_first_row_len - first_row_len)
+    
+                message = message + f" | Line: {row_num} | Control: {'True ' if control else 'False'} | Byte1: {b1:#04x} | Byte2: {b2:#04x} {'| ' + code if code != "" else ""}"
 
-            if i == 0:
-                first_row_len = len(self.message)
-                if first_row_len > self.max_first_row_len:
-                    self.max_first_row_len = first_row_len
+                if i == 0:
+                    first_row_len = len(message)
+                    if first_row_len > max_first_row_len:
+                        max_first_row_len = first_row_len
 
-            self.caption_count += 1
-        
-        print(self.message, end="\r", file=sys.stderr)
-        
+                code_count += 1
+
+            print(message, end="\r", file=sys.stderr)
+
+    @staticmethod
+    def image_decoder_worker(
+            tx,
+            image_width,
+            image_height,
+            input_file,
+            ffmpeg_path,
+            ffmpeg_pre_scale,
+            deinterlaced,
+            start_line,
+    ):
+        setproctitle(multiprocessing.current_process().name)
+        try:
+            if not os.path.exists(ffmpeg_path):
+                raise RuntimeError('Could not find ffmpeg at %s' % ffmpeg_path)
+
+            image_size = image_width * image_height
+
+            ffmpeg_cmd = [
+                ffmpeg_path, "-i", input_file, 
+                "-vf", 
+                f"{ffmpeg_pre_scale}scale={image_width}:-1:flags=neighbor,crop=iw:{start_line + image_height}:0:{start_line}{',interlace=lowpass=off' if deinterlaced else ''}",
+                "-f", "rawvideo",
+                "-pix_fmt", "gray8",
+                "pipe:1"
+            ]
+
+            fpid = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+
+            while True:
+                image_buffer = fpid.stdout.read(image_size)
+                if len(image_buffer) < image_size:
+                    break
+
+                image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
+
+                tx.send(extract_closed_caption_bytes(image, fixed_line=None))
+        except (InterruptedError, KeyboardInterrupt, EOFError):
+            pass
+        finally:
+            tx.send("DONE")
 
     def decode(self, filename, output_filename):
         running_decoders = []
         running_decoders_conns = []
         formats = self.format.split(",")
+        options = {
+            'text_tc1': self.text_tc1
+        }
 
+        # start decoders
         for format in formats:
             if format in self.DECODERS:
                 decoder_func = self.DECODERS.get(format)
 
                 rx, tx = multiprocessing.Pipe(False)
-                options = {
-                    'text_tc1': self.text_tc1
-                }
                 decoder = multiprocessing.Process(None, decoder_func, name=f"cc_decoder_{format}", args=(rx,output_filename,options,))
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
 
-        self.message = ""
-        self.caption_count = 0
-        self.frame_count = 0
-        self.max_first_row_len = 0
         exception = None
-
-        def stop_decode(*args):
-            try:
-                self.fpid.terminate()
-                self.fpid.join()
-            except:
-                pass
 
         if len(running_decoders) > 0:
             print("Decoding captions...", file=sys.stderr)
-            self.start_ffmpeg(filename, lines=self.lines, start_line=self.start_line)
+            
+            # start ffmpeg and image decoding
+            row_rx, row_tx = multiprocessing.Pipe(False)
+            image_decoder_process = multiprocessing.Process(
+                None, ClosedCaptionFileDecoder.image_decoder_worker, name=f"cc_decoder_image_decoder",
+                args=(
+                    row_tx,
+                    self.image_width,
+                    self.image_height,
+                    filename,
+                    self.ffmpeg_path,
+                    self.ffmpeg_pre_scale,
+                    self.deinterlaced,
+                    self.start_line,
+                )
+            )
+            image_decoder_process.start()
 
-            signal.signal(signal.SIGINT, stop_decode)
+            status_rx, status_tx = multiprocessing.Pipe(False)
+            print_status_process = multiprocessing.Process(
+                None, ClosedCaptionFileDecoder.print_status_worker, name=f"cc_decoder_print_status",
+                args=(status_rx,)
+            )
+            print_status_process.start()
 
             try:
                 while True:
-                    image_buffer = self.fpid.stdout.read(self.image_size)
-                    if len(image_buffer) < self.image_size:
+                    try:
+                        rows = row_rx.recv()
+                        if rows == "DONE":
+                            break
+                    except:
                         break
-    
-                    image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(self.image_height, self.image_width)
 
-                    rows = extract_closed_caption_bytes(image, fixed_line=None)
+                    # send decoded data to all decoder processes
                     for conn in running_decoders_conns:
                         conn.send(rows)
-
-                    self.print_status(rows)
                     
+                    # send data to status process
+                    status_tx.send((self.frame_count, rows))
+
                     self.frame_count += 1
             except Exception as e:
                 exception = e
-                stop_decode()
             finally:
+                # clean up decoder processes
                 for i in range(len(running_decoders_conns)):
                     try:
                         running_decoders_conns[i].send("DONE")
                     except:
                         running_decoders[i].terminate()
-
+                
                 for decoder in running_decoders:
                     decoder.join()
+                
+                # clean up status output
+                try:
+                    status_tx.send("DONE")
+                except:
+                    print_status_process.terminate()
 
+                print_status_process.join()
             if exception is not None:
                 print("", file=sys.stderr)
                 print("Error decoding, check the exception above.", file=sys.stderr)
