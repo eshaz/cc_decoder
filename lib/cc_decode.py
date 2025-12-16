@@ -496,6 +496,7 @@ def sync_to_preamble(img, row):
     line_min, line_max = line.min(), line.max()
     if line_min == line_max:
         return None
+
     norm = (line - line_min) / (line_max - line_min)
     norm_len = len(norm)
 
@@ -560,47 +561,73 @@ def sync_to_preamble(img, row):
         "score": best_score,
     }
 
+def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
+    s = round(preamble_end + bit_index * bit_width) + bit_padding
+    e = round(preamble_end + (bit_index + 1) * bit_width) - bit_padding
+
+    seg = normalized_line[s:e]
+    std = seg.std()
+    mean = seg.mean()
+
+    return 1 if mean > normalized_median else 0, std
+
 def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score):
     # fraction of data to remove at edges of each detected bit
     bit_width_padding = 0.1
+    min_std_dev_for_correction = 0.3
 
     # ---- BIT DECODING ----
-    nomalized_median = np.mean(normalized_line[round(preamble_start):round(preamble_end)])
+    normalized_median = np.mean(normalized_line[round(preamble_start):round(preamble_end)])
     bit_padding = math.ceil(bit_width_padding * bit_width)
 
-    bits, bit_stds = [], []
-    for i in range(START_BIT_COUNT + DATA_BIT_COUNT):
-        s = round(preamble_end + i * bit_width) + bit_padding
-        e = round(preamble_end + (i + 1) * bit_width) - bit_padding
-
-        seg = normalized_line[s:e]
-        bits.append(1 if seg.mean() > nomalized_median else 0)
-        bit_stds.append(seg.std())
-
     # assert start bit
-    if bits[0] != 0 or bits[1] != 0 or bits[2] != 1:
+    if (
+        get_bit(0, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
+        or get_bit(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
+        or get_bit(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 1
+    ):
         return None, None, None, None
 
     # build each byte
     byte_data, byte_parity = [], []
+
+    b_bits = np.ndarray(7, dtype=int)
+    b_stds = np.ndarray(7, dtype=float)
     for i in range(2):
-        b_start = START_BIT_COUNT + i * 8
-        b_end = b_start + 8
-        b_bits = bits[b_start:b_end]
-        b_stds = bit_stds[b_start:b_end]
+        b_data_start = START_BIT_COUNT + i * 8
+        b_parity_idx = b_data_start + 7
+        b_worst_error_idx = 0
+        b_worst_error = 0
+        b_error_count = 0
+        b_parity_calculated = 1
 
-        # Try to recover least confident bit using parity
-        max_std_idx = np.argmax(b_stds)
-        if max_std_idx < 7:
-            # reconstruct data bit, if parity is good
-            known_count = sum(b_bits[:7][j] for j in range(7) if j != max_std_idx)
-            b_bits[max_std_idx] = 1 if (known_count + b_bits[7]) % 2 == 0 else 0
+        # get data bits
+        for b_idx in range(0, 7):
+            bit, std = get_bit(b_idx + b_data_start, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)
+            b_bits[b_idx] = bit
+            b_stds[b_idx] = std
+            # gather parity
+            b_parity_calculated += bit
 
-        parity = 1 if sum(b_bits[:7]) % 2 == 0 else 0
-        
-        if max_std_idx == 7:
-            # reconstruct parity bit, if data is good
-            b_bits[7] = parity
+            # check for possible errors
+            if std > min_std_dev_for_correction:
+               b_error_count += 1
+               if b_worst_error < std:
+                  b_worst_error_idx = b_idx
+                  b_worst_error = std
+
+        # get parity bit
+        b_parity_calculated %= 2
+        b_parity_bit, b_parity_bit_std = get_bit(b_parity_idx, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)
+
+        # correct single bit errors using parity
+        if (
+            b_error_count == 1 # only one data bit error
+            and b_parity_bit != b_parity_calculated # parity miss-match
+            and b_parity_bit_std < min_std_dev_for_correction # parity bit is probably good
+        ):
+            b_bits[b_worst_error_idx] = 1 if b_bits[b_worst_error_idx] == 0 else 0
+            b_parity_calculated = b_parity_bit
 
         # write out the bytes
         byte_data.append(
@@ -612,12 +639,13 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
             | (b_bits[5] << 5)
             | (b_bits[6] << 6)
         )
-        byte_parity.append(b_bits[7] == parity)
+        byte_parity.append(b_parity_bit == b_parity_calculated)
 
     # uncomment to debug
-    # if best_score > 0.75 and not (byte_parity[0] or byte_parity[1]):
-    #     print("bit width", bit_width, "score", best_score)
-    #     debug_plot(norm, preamble_start, preamble_end, bit_width, bits, bit_width_padding)
+    #if b_error_count >= 1 or not (byte_parity[0] or byte_parity[1]):
+    #    bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] for i in range(START_BIT_COUNT + DATA_BIT_COUNT)]
+    #    print("bit width", bit_width, "score", best_score, "errors", b_error_count)
+    #    debug_plot(normalized_line, round(preamble_start), round(preamble_end), round(bit_width), bits, bit_width_padding)
 
     return byte_data[0], byte_parity[0], byte_data[1], byte_parity[1]
 
@@ -679,14 +707,14 @@ def find_and_decode_rows(img, fixed_line=None):
 
     max_search = img.height - 2
     start_row_bad = False
-    row_idx = row_target
+    row_idx = 0 #row_target
     field_idx = 0
 
     while row_idx < max_search:
         # first try to search from the previous good row
         preamble_match = sync_to_preamble(img, row_idx)
 
-        if preamble_match is not None and preamble_match["score"] > 0.75:
+        if preamble_match is not None and preamble_match["score"] > 0.7:
             b1, b1_parity, b2, b2_parity = decode_bytes(
                 preamble_match["normalized_line"],
                 preamble_match["preamble_start"],
@@ -697,11 +725,10 @@ def find_and_decode_rows(img, fixed_line=None):
             rows_found.append((row_idx, b1, b1_parity, b2, b2_parity))
 
             lastPreambleOffset = preamble_match["preamble_start"]
+            row_idx += 1
 
             if field_idx == 0:
                 last_row_found = row_idx
-                row_idx += 1
-                field_idx += 1
             else:
                 # found both fields
                 break
@@ -1002,9 +1029,7 @@ class SCCCaptionTrack(CaptionTrack):
         self.write_text([data], frames)
 
     def global_text_reset(self, data, frames):
-        self.add_text(self, data, frames)
-
-        self.write_text(self._text_buffer, frames)
+        self.add_text(data, frames)
         self._text_buffer = []
         
     def global_flip_buffers(self, data, frames):
@@ -1069,7 +1094,6 @@ class TextCaptionTrack(CaptionTrack):
         self.enable_tc1_compatibility = self._options['text_tc1']
 
     def global_text_reset(self, data, frames):
-        self._write(self._text_buffer)
         self._text_buffer = []
     
     def dedupe_bad_data_from_text(self, code):
@@ -1452,14 +1476,17 @@ def decode_xds_time_of_day(packet_bytes):
     return f'TM {hours:0>2}:{minutes:0>2}{dst} {zero_seconds}{tape_delayed}{leap_day} {month} {day_of_month:0>2} {year} {day_of_week}'
 
 def decode_xds_local_time_zone(pbytes):
+    # TODO: convert to +-12
     """ Decode the Local Time Zone packets """
     _assert_len(pbytes, 2)
     data, _ = pbytes.pop(0)
 
-    tz = data & 0b11111
+    tz = -(data & 0b11111)
+    if tz > 11:
+        tz = 24 - tz
     dst = 'DST' if (data & 0b100000) else 'ST'
 
-    return f'TZ {tz} {dst}'
+    return f'{tz} {dst}'
 
 def decode_xds_content_advisory(pbytes):
     """ Decode content advisory packet, returning a string describing the rating """
@@ -1600,7 +1627,7 @@ def describe_xds_packet(packet_bytes):
     return 'XDS - Empty Packet'
 
 
-def decode_xds_packets(rx, fixed_line=None, output_filename=None):
+def decode_xds_packets(rx, output_filename, options):
     setproctitle(current_process().name)
     frame = 0
     packetbuf = []

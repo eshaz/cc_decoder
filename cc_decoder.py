@@ -81,7 +81,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import lib.cc_decode
 import multiprocessing
 import atexit
 import signal
@@ -304,4 +303,6 @@ def main():
                                            start_line=args.start_line)
         exit(decoder.decode(args.videofile, args.o))
 
-main()
+if __name__ == '__main__':
+    multiprocessing.freeze_support()
+    main()
