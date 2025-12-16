@@ -45,14 +45,12 @@ __version__ = "1.0.0"
 __maintainer__ = "Max Smith"
 __email__ = None  # Sorry, I get far too much spam as it is. Track me down at http://www.notonbluray.com
 
-import os
 import re
 import sys
 import math
 
 import numpy as np
 import matplotlib.pyplot as plt
-
 
 from setproctitle import setproctitle
 from multiprocessing import current_process
@@ -440,30 +438,6 @@ def memoize(f):
 
     return Memodict().__getitem__
 
-
-class BaseImageWrapper(object):
-    def get_pixel_luma(self, x, y):
-        """ Return a pixels luma value normalized to the range 0 (black) to 255 (white) """
-        raise NotImplemented('get_pixel_luma must be overridden')
-
-    def unlink(self):
-        """ Delete the underlying file, and/or release the resource held """
-        raise NotImplemented('unlink must be overridden')
-
-
-class FileImageWrapper(BaseImageWrapper):
-    """ A file based wrapper for images """
-    def __init__(self, file_name):
-        self.image = None
-        self.file_name = file_name
-        self.height = 0
-        self.width = 0
-
-    def unlink(self):
-        """ Delete the underlying file, and/or release the resource held """
-        self.image = None
-        os.unlink(self.file_name)
-
 @memoize
 def is_control(byte1, byte2):
     return (byte1, byte2) in ALL_CC_CONTROL_CODES
@@ -491,7 +465,7 @@ def sync_to_preamble(img, row):
     steps = (max_clock_len - min_clock_len) * 5
 
     # Read and normalize line
-    line = np.array([img.get_pixel_luma(w, row) for w in range(img.width)], dtype=int)
+    line = img[row]
 
     line_min, line_max = line.min(), line.max()
     if line_min == line_max:
@@ -696,8 +670,9 @@ def find_and_decode_rows(img, fixed_line=None):
     global lastPreambleOffset
 
     last_row_found -= 1
+    height, width = img.shape
 
-    if last_row_found > img.height - 2:
+    if last_row_found > height - 2:
         last_row_found = 0  # Protect against streams suddenly losing a few rows
     if last_row_found < 0:
         last_row_found = 0
@@ -705,7 +680,7 @@ def find_and_decode_rows(img, fixed_line=None):
     row_target = fixed_line or last_row_found
     rows_found = []
 
-    max_search = img.height - 2
+    max_search = height - 2
     start_row_bad = False
     row_idx = 0 #row_target
     field_idx = 0
