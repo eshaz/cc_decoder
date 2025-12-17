@@ -80,6 +80,7 @@ import sys
 import multiprocessing
 from setproctitle import setproctitle
 import time
+import lib.cc_decode
 from lib.cc_decode import (
     decode_to_srt,
     decode_captions_raw,
@@ -129,8 +130,8 @@ class ClosedCaptionFileDecoder(object):
         # rate tracking
         prev_row_ts = time.perf_counter_ns()
         curr_row_ts = prev_row_ts
+        prev_row_frame = 0
         frames_per_second = 29.97
-        rate_update_interval = 50
         decode_rate = 0
 
         while True:
@@ -143,11 +144,12 @@ class ClosedCaptionFileDecoder(object):
     
             frame, rows = data
 
-            if frame % rate_update_interval == 0:
-                curr_row_ts = time.perf_counter_ns()
-                elapsed_seconds = (curr_row_ts - prev_row_ts) / 1e9
+            curr_row_ts = time.perf_counter_ns()
+            elapsed_seconds = (curr_row_ts - prev_row_ts) / 1e9
+            if elapsed_seconds >= 1:
+                decode_rate = (frame - prev_row_frame) / frames_per_second / elapsed_seconds
+                prev_row_frame = frame
                 prev_row_ts = curr_row_ts
-                decode_rate = rate_update_interval / frames_per_second / elapsed_seconds
 
             print(" " * len(message) + "\r", end="", file=sys.stderr)
             message = f"Frame: {frame} | Code Count: {code_count} | Rate: {decode_rate:.2f}x"
@@ -202,6 +204,8 @@ class ClosedCaptionFileDecoder(object):
                 stderr=sys.stderr,
                 bufsize=image_size
             )
+
+            lib.cc_decode.PRE_COMPUTED_SINE_TEMPLATES = lib.cc_decode.precompute_sine_templates(image_width)
 
             while True:
                 image_buffer = fpid.stdout.read(image_size)
