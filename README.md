@@ -26,14 +26,14 @@ Extract XDS information
 * `cc_decoder.py --ccformat xds -o video_file video_file.mpg`
 
 Extract Text channel information
-* `cc_decoder.py --ccformat text --text_tc1 -o video_file video_file.mpg`
+* `cc_decoder.py --ccformat text -o video_file video_file.mpg`
 
 
 Options
 =======
 ```
 $ cc_decoder.py --help
-usage: cc_decoder.py [-h] -o  [-q] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ccformat] [--text_tc1] [--lines] [--start_line] videofile
+usage: cc_decoder.py [-h] -o  [-q] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ccformat] [--lines] [--start_line] videofile
 
 Extracts CEA-608-E Closed Captions (line 21) data from a video file
 
@@ -60,7 +60,6 @@ Input Options:
   --ffmpeg_pre_scale   FFMpeg video filter options before scaling.
 
 Decoding Options:
-  --text_tc1           Enables TeleCaption I text mode compatibility. Specify if there is occasional repeated characters in TEXT mode
   --lines              Number of lines to search for CC in the video, starting at the start line (default 10)
   --start_line         Start at a particular line 0=topmost line
 

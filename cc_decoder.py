@@ -101,13 +101,12 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, text_tc1=False, fixed_line=None, quiet=False):
+    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, fixed_line=None, quiet=False):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
         self.deinterlaced = deinterlaced
         self.format = ccformat or 'srt'
         self.fixed_line = fixed_line
-        self.text_tc1 = text_tc1
         self.fpid = None
         self.start_line = start_line
         self.workingdir = ''
@@ -221,9 +220,7 @@ class ClosedCaptionFileDecoder(object):
         running_decoders = []
         running_decoders_conns = []
         formats = self.format.split(",")
-        options = {
-            'text_tc1': self.text_tc1
-        }
+        options = {}
 
         # start decoders
         for format in formats:
@@ -347,7 +344,6 @@ def main():
     )
 
     decoding_options = p.add_argument_group('Decoding Options')
-    decoding_options.add_argument('--text_tc1', default=False, action='store_true', help='Enables TeleCaption I text mode compatibility. Specify if there are occasional repeated characters in TEXT mode')
     decoding_options.add_argument('--lines', metavar='', default=10, type=int, help='Number of lines to search for CC in the video, starting at the start line (default 10)')
     decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start at a particular line 0=topmost line')
 
@@ -360,7 +356,6 @@ def main():
                                            ccformat=args.ccformat,
                                            lines=args.lines,
                                            quiet=args.q,
-                                           text_tc1=args.text_tc1,
                                            start_line=args.start_line)
         exit(decoder.decode(args.videofile, args.o))
 

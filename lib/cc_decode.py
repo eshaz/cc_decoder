@@ -776,12 +776,12 @@ def decode_captions_debug(rx, output_filename, options):
             break
 
         for row in rows:
-           row_num, code, _, b1, _, b2, _ = row
+           row_num, code, _, b1, b1_parity, b2, b2_parity = row
 
            if code is None:
                out_func('%i %i skip - no preamble' % (frame, row_num))
            else:
-               out_func('%i %i - bytes: 0x%02x 0x%02x : %s' % (frame, row_num, b1, b2, code))
+               out_func('%i %i - bytes: 0x%02x 0x%02x - parity: %s %s: %s' % (frame, row_num, b1, b2, 'T' if b1_parity else 'F', 'T' if b2_parity else 'F', code))
                codes.append([b1, b2])
         frame += 1
     
@@ -804,7 +804,8 @@ class CaptionTrack:
         self._buffer_on_screen = []
         self._buffer_off_screen = []
         self._roll_up_buffer = []
-        self._text_buffer = []
+        self._text_buffer = np.ndarray(32, dtype=object)
+        self._text_cursor = 0
 
         self.f = None
         self.f_text = None
@@ -828,10 +829,7 @@ class CaptionTrack:
     
             # write code
             if not is_global_code:
-                if byte1 <= 0x0f and byte1 > 0x00:
-                    # filter out xds
-                    pass
-                elif self.mode == "pop_on":
+                if self.mode == "pop_on":
                     self.add_off_screen(data)
                 elif self.mode == "paint_on":
                     self.add_on_screen(data, frames)
@@ -923,9 +921,6 @@ class CaptionTrack:
         else:
             self._buffer_on_screen = []
 
-        if self.mode != "text":
-            self._text_buffer = []
-
     def add_on_screen(self, data, frames):
         raise NotImplemented
 
@@ -936,7 +931,12 @@ class CaptionTrack:
         raise NotImplemented
     
     def add_text(self, data, frames):
-        raise NotImplemented
+        self._text_buffer[self._text_cursor] = data
+        self._text_cursor = min(self._text_cursor + 1, len(self._text_buffer) - 1)
+
+    def clear_text(self):
+        self._text_buffer[:] = None
+        self._text_cursor = 0
     
     def write_text(self, data, frames):
         if self.f_text is None:
@@ -974,7 +974,7 @@ class SCCCaptionTrack(CaptionTrack):
 
     def global_text_reset(self, data, frames):
         self.add_text(data, frames)
-        self._text_buffer = []
+        self.clear_text()
         
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
@@ -998,12 +998,12 @@ class SCCCaptionTrack(CaptionTrack):
         self.write_caption([data], frames)
 
     def add_text(self, data, frames):
+        super().add_text(data, frames)
         _, code, _, _, _, _, _ = data
 
-        self._text_buffer.append(data)
         if 'Carriage Return' in code:
-            self._write(self.out_text, self._text_buffer, frames)
-            self._text_buffer = []
+            self._write(self.out_text, self._text_buffer[:self._text_cursor], frames)
+            self.clear_text()
 
     def write_text(self, data, frames):        
         super().write_text(data, frames)
@@ -1035,10 +1035,9 @@ class TextCaptionTrack(CaptionTrack):
 
         self.prev_char = None
         self.previous_frames = 0
-        self.enable_tc1_compatibility = self._options['text_tc1']
 
     def global_text_reset(self, data, frames):
-        self._text_buffer = []
+        self.clear_text()
     
     def dedupe_bad_data_from_text(self, code):
         if self.prev_char == None:
@@ -1056,7 +1055,13 @@ class TextCaptionTrack(CaptionTrack):
         caption_text = ""
         has_printable = False
         
-        for (_, code, control, byte1, byte1_parity, byte2, byte2_parity) in data:
+        for decoded_row in data:
+            if decoded_row is None:
+                # write a space?
+                continue
+
+            (_, code, control, byte1, byte1_parity, byte2, byte2_parity) = decoded_row
+
             # add a line break if row advances
             if control:
                 # ignore control codes with bad parity
@@ -1072,15 +1077,15 @@ class TextCaptionTrack(CaptionTrack):
                     elif code.endswith("Backspace"):
                         caption_text = caption_text[0:-1]
                     elif "Tab" in code:
-                        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)$', code)
+                        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
                         if tab_match:
                             tab = int(tab_match["tab_offset"])
                             tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
                             caption_text += " " * tab
                     elif "Indent" in code:
-                        intend_match = re.search(r'Indent (?P<indent_offset>\d+)$', code)
-                        if intend_match:
-                            indent = int(intend_match["indent_offset"])
+                        intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
+                        if intent_match:
+                            indent = int(intent_match["indent_offset"])
                             caption_text += " " * indent
                     else:
                         # probably don't add anything here if the code is not printable
@@ -1102,19 +1107,21 @@ class TextCaptionTrack(CaptionTrack):
 
         # compatibility with TeleCaption I decoder
         # when there's a data interruption, the decoder resets the cursor to first column
+        # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
         # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
         if (
-            self.previous_frames != frames - 1
-            and not 'Carriage Return' in code
-            and self.enable_tc1_compatibility
+            "Indent" in code
         ):
-            self._text_buffer = []
+            intent_match = re.search(r'.*Indent (?P<indent_offset>\d+)', code)
+            if intent_match:
+                indent = int(intent_match["indent_offset"])
+                self._text_cursor = indent
 
         if 'Carriage Return' in code and code == self.prev_code:
-            self.write_text(self._text_buffer, frames)
-            self._text_buffer = []
+            self.write_text(self._text_buffer[:self._text_cursor], frames)
+            self.clear_text()
         else:
-            self._text_buffer.append(data)
+            super().add_text(data, frames)
 
         self.previous_frames = frames
 
@@ -1164,8 +1171,7 @@ class SRTCaptionTrack(TextCaptionTrack):
             self.text_start_frame = frames
 
     def global_text_reset(self, data, frames):
-        self.write_text(self._text_buffer, frames)
-        self._text_buffer = []
+        self.clear_text()
 
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
@@ -1214,10 +1220,10 @@ class SRTCaptionTrack(TextCaptionTrack):
         _, code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code and code == self.prev_code:
-            self.write_text(self._text_buffer, frames)
-            self._text_buffer = []
+            self.write_text(self._text_buffer[:self._text_cursor], frames)
+            self.clear_text()
         else:
-            self._text_buffer.append(data)
+            super().add_text(data, frames)
     
     def write_text(self, data, frames):
         self.text_end_frame = frames
@@ -1290,10 +1296,10 @@ class CaptionTrackFactory():
 
                     self._field_to_active_track[detected_field] = self._tracks[cc_track]
 
-                elif b1 < 0x0f and b1 > 0x00:
-                    # xds data is always field 1
-                    detected_field = 1
-                    self._row_to_field[row_num] = detected_field
+                # elif b1 < 0x0f and b1 > 0x00:
+                #     # xds data is always field 1
+                #     detected_field = 1
+                #     self._row_to_field[row_num] = detected_field
 
             # add data
             if row_num in self._row_to_field:
