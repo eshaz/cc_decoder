@@ -58,6 +58,7 @@ from multiprocessing import current_process
 CLOCK_RUN_IN_COUNT = 7
 START_BIT_COUNT = 3
 DATA_BIT_COUNT = 16
+PRE_COMPUTED_SINE_TEMPLATES = []
 
 CC_TABLE = {
     0x00: '',  # Special - included here to clear a few things up
@@ -449,17 +450,44 @@ def decode_byte_pair(control, byte1, byte2, default_unicode=True):
     return '' + CC_TABLE.get(byte1, '?b1(%02x)' % (byte1) if default_unicode else "") + \
            CC_TABLE.get(byte2, '?b2(%02x)' % (byte2) if default_unicode else "")
 
-template_cache = {}
+def precompute_sine_templates(image_width):
+    # granularity of period width
+    min_clock_len = round(0.035 * image_width) # lower boundary for period width
+    max_clock_len = round(0.041 * image_width) # upper boundary for period width
+    num_steps = 5 # fractional amount to search for pixel width
+
+    steps = (max_clock_len - min_clock_len) * num_steps
+    search_widths = np.linspace(min_clock_len, max_clock_len, steps)
+
+    templates = []
+    # precompute the preamble clock run-in search parameters
+    for i in range(len(search_widths)):
+        pixels_per_cycle = search_widths[i]
+        run_len = round(CLOCK_RUN_IN_COUNT * pixels_per_cycle)
+        max_width = round((CLOCK_RUN_IN_COUNT + START_BIT_COUNT + DATA_BIT_COUNT) * pixels_per_cycle)
+
+        if max_width >= image_width:
+            # any match will be too long to fit in a line
+            break
+    
+        t = np.arange(run_len)
+        template = np.sin(2 * np.pi * t / pixels_per_cycle)
+        template -= template.mean()
+        template_rev = template[::-1]
+        var_t = np.sum(template ** 2)
+        
+        templates.append((
+            pixels_per_cycle,
+            max_width,
+            run_len,
+            template,
+            template_rev,
+            var_t
+        ))
+
+    return np.asarray(templates, dtype=tuple)
 
 def sync_to_preamble(img, row):
-    # clock run-in fit parameters
-    # lower boundary for period width
-    min_clock_len = 25
-    # upper boundary for period width
-    max_clock_len = 30
-    # granularity of period width
-    steps = (max_clock_len - min_clock_len) * 5
-
     # Read and normalize line
     line = img[row]
 
@@ -478,25 +506,11 @@ def sync_to_preamble(img, row):
     best_score = -np.inf
     preamble_start = None
     bit_width = None
-    best_template = None
-    for pixels_per_cycle in np.linspace(min_clock_len, max_clock_len, steps):
-        run_len = round(CLOCK_RUN_IN_COUNT * pixels_per_cycle)
-        max_width = round((CLOCK_RUN_IN_COUNT + START_BIT_COUNT + DATA_BIT_COUNT) * pixels_per_cycle)
-        if max_width >= norm_len:
-            continue
+    best_sine_template = None
 
-        # Build or reuse template
-        if pixels_per_cycle not in template_cache:
-            t = np.arange(run_len)
-            template = np.sin(2 * np.pi * t / pixels_per_cycle)
-            template -= template.mean()
-            var_t = np.sum(template ** 2)
-            template_cache[pixels_per_cycle] = (template, var_t)
-        else:
-            template, var_t = template_cache[pixels_per_cycle]
-
+    for (pixels_per_cycle, max_width, run_len, sine_template, sine_template_rev, var_t) in PRE_COMPUTED_SINE_TEMPLATES:
         # normalized correlation
-        conv = np.convolve(norm, template[::-1], mode='valid')
+        conv = np.convolve(norm, sine_template_rev, mode='valid')
         sum_x = cumsum[run_len-1:] - np.concatenate(([0], cumsum[:-run_len]))
         sum_x2 = cumsum2[run_len-1:] - np.concatenate(([0], cumsum2[:-run_len]))
         var_x = sum_x2 - sum_x ** 2 / run_len
@@ -504,20 +518,22 @@ def sync_to_preamble(img, row):
 
         idx = np.argmax(score)
         if idx + max_width >= norm_len:
+            # best match would be too long to fit in a line
             continue
+
         if score[idx] > best_score:
             best_score = score[idx]
             preamble_start = idx
             bit_width = pixels_per_cycle
-            best_template = template
+            best_sine_template = sine_template
 
-    if best_template is None:
+    if best_sine_template is None:
         return None
 
     # ---- PHASE CORRECTION ----
     run_len = round(CLOCK_RUN_IN_COUNT * bit_width)
     seg = norm[round(preamble_start):round(preamble_start) + run_len]
-    if np.dot(seg - seg.mean(), best_template) < 0:
+    if np.dot(seg - seg.mean(), best_sine_template) < 0:
         # flip phase
         preamble_start += bit_width / 2
 
@@ -532,12 +548,13 @@ def sync_to_preamble(img, row):
     }
 
 def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
-    s = round(preamble_end + bit_index * bit_width) + bit_padding
-    e = round(preamble_end + (bit_index + 1) * bit_width) - bit_padding
+    start = preamble_end + bit_index * bit_width
+    s = round(start) + bit_padding
+    e = round(start + bit_width) - bit_padding
 
     seg = normalized_line[s:e]
-    std = seg.std()
     mean = seg.mean()
+    std = math.sqrt((abs(seg - mean) ** 2).mean())
 
     return 1 if mean > normalized_median else 0, std
 
@@ -559,10 +576,11 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
         return None, None, None, None
 
     # build each byte
-    byte_data, byte_parity = [], []
-
+    byte_data = np.ndarray(2, dtype=int)
+    byte_parity = np.ndarray(2, dtype=bool)
     b_bits = np.ndarray(7, dtype=int)
     b_stds = np.ndarray(7, dtype=float)
+
     for i in range(2):
         b_data_start = START_BIT_COUNT + i * 8
         b_parity_idx = b_data_start + 7
@@ -600,7 +618,7 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
             b_parity_calculated = b_parity_bit
 
         # write out the bytes
-        byte_data.append(
+        byte_data[i] = (
             b_bits[0]
             | (b_bits[1] << 1)
             | (b_bits[2] << 2)
@@ -609,7 +627,7 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
             | (b_bits[5] << 5)
             | (b_bits[6] << 6)
         )
-        byte_parity.append(b_parity_bit == b_parity_calculated)
+        byte_parity[i] = b_parity_bit == b_parity_calculated
 
     # uncomment to debug
     #if b_error_count >= 1 or not (byte_parity[0] or byte_parity[1]):
