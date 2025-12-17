@@ -421,10 +421,6 @@ CC_CHANNEL_TO_TEXT_CHANNEL = {
     'CC4': 'T4',
 }
 
-lastPreambleOffset = 0  # Global cache last preamble offset
-last_row_found = 0  # Global, cache the last row we found cc's on
-
-
 def memoize(f):
     """ Memoization decorator for performance on inner loop"""
 
@@ -664,29 +660,16 @@ def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_paddin
     plt.legend()
     plt.show()
 
-def find_and_decode_rows(img, fixed_line=None):
-    """ Search for a closed caption row in the passed image, if one is present decode and return the bytes present """
-    global last_row_found
-    global lastPreambleOffset
-
-    last_row_found -= 1
-    height, width = img.shape
-
-    if last_row_found > height - 2:
-        last_row_found = 0  # Protect against streams suddenly losing a few rows
-    if last_row_found < 0:
-        last_row_found = 0
-
-    row_target = fixed_line or last_row_found
+def find_and_decode_rows(img, fixed_line = 0):
+    height, _ = img.shape
     rows_found = []
-
+    field_0_idx = height
     max_search = height - 2
-    start_row_bad = False
-    row_idx = 0 #row_target
-    field_idx = 0
 
-    while row_idx < max_search:
-        # first try to search from the previous good row
+    for row_idx in range(fixed_line, max_search):
+        if field_0_idx + 1 < row_idx:
+            # break if the second field was skipped
+            break
         preamble_match = sync_to_preamble(img, row_idx)
 
         if preamble_match is not None and preamble_match["score"] > 0.7:
@@ -698,26 +681,12 @@ def find_and_decode_rows(img, fixed_line=None):
                 preamble_match["score"],
             )
             rows_found.append((row_idx, b1, b1_parity, b2, b2_parity))
-
-            lastPreambleOffset = preamble_match["preamble_start"]
-            row_idx += 1
-
-            if field_idx == 0:
-                last_row_found = row_idx
-            else:
-                # found both fields
-                break
-        elif not start_row_bad and field_idx == 0:
-            # if the first field is bad when starting at the previous good row
-            # reset the loop
-            start_row_bad = True
-            row_idx = 0
-        else:
-            row_idx += 1
+            if field_0_idx == height:
+                field_0_idx = row_idx
 
     return rows_found
 
-def extract_closed_caption_bytes(img, fixed_line=None):
+def extract_closed_caption_bytes(img, fixed_line=0):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
     # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
     decoded_rows = []
@@ -782,10 +751,10 @@ def decode_captions_raw(rx, output_filename, options):
                 if code and not control:
                     buff += code
                 elif buff:
-                    out_func('%i %i (%i,%i) - [%02x, %02x] - Text:%s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, buff))
+                    out_func('%i %i - [%02x, %02x] - Text:%s' % (frame, row_num, b1, b2, buff))
                     buff = ''
                 if control:
-                    out_func('%i %i (%i,%i) - [%02x, %02x] - %s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, code))
+                    out_func('%i %i - [%02x, %02x] - %s' % (frame, row_num, b1, b2, code))
         frame += 1
 
     if f is not None:
@@ -812,7 +781,7 @@ def decode_captions_debug(rx, output_filename, options):
            if code is None:
                out_func('%i %i skip - no preamble' % (frame, row_num))
            else:
-               out_func('%i %i (%i,%i) - bytes: 0x%02x 0x%02x : %s' % (frame, row_num, lastPreambleOffset, last_row_found, b1, b2, code))
+               out_func('%i %i - bytes: 0x%02x 0x%02x : %s' % (frame, row_num, b1, b2, code))
                codes.append([b1, b2])
         frame += 1
     

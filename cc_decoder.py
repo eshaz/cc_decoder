@@ -188,9 +188,10 @@ class ClosedCaptionFileDecoder(object):
             image_size = image_width * image_height
 
             ffmpeg_cmd = [
-                ffmpeg_path, "-i", input_file, 
-                "-vf", 
-                f"{ffmpeg_pre_scale}scale={image_width}:-1:flags=neighbor,crop=iw:{start_line + image_height}:0:{start_line}{',interlace=lowpass=off' if deinterlaced else ''}",
+                ffmpeg_path,
+                "-loglevel", "error",
+                "-i", input_file, 
+                "-vf", f"{ffmpeg_pre_scale}scale={image_width}:-1:flags=neighbor,crop=iw:{start_line + image_height}:0:{start_line}{',interlace=lowpass=off' if deinterlaced else ''}",
                 "-f", "rawvideo",
                 "-pix_fmt", "gray8",
                 "pipe:1"
@@ -199,7 +200,8 @@ class ClosedCaptionFileDecoder(object):
             fpid = subprocess.Popen(
                 ffmpeg_cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=sys.stderr,
+                bufsize=image_size
             )
 
             while True:
@@ -209,7 +211,7 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, fixed_line=None))
+                tx.send(extract_closed_caption_bytes(image, fixed_line=0))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -270,18 +272,18 @@ class ClosedCaptionFileDecoder(object):
                         rows = row_rx.recv()
                         if rows == "DONE":
                             break
-                    except:
+
+                        # send decoded data to all decoder processes
+                        for conn in running_decoders_conns:
+                            conn.send(rows)
+
+                        # send data to status process
+                        if not self.quiet:
+                            status_tx.send((self.frame_count, rows))
+
+                        self.frame_count += 1
+                    except (InterruptedError, KeyboardInterrupt, EOFError):
                         break
-
-                    # send decoded data to all decoder processes
-                    for conn in running_decoders_conns:
-                        conn.send(rows)
-                    
-                    # send data to status process
-                    if not self.quiet:
-                        status_tx.send((self.frame_count, rows))
-
-                    self.frame_count += 1
             except Exception as e:
                 exception = e
             finally:
