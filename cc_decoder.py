@@ -317,19 +317,39 @@ class ClosedCaptionFileDecoder(object):
             raise RuntimeError('Unknown output format %s, try one of %s' % (format, self.DECODERS.keys()))
 
 def main():
-    p = argparse.ArgumentParser(description='Extract line 21 data from a video file')
+    p = argparse.ArgumentParser(
+        description='Extracts CEA-608-E Closed Captions (line 21) data from a video file',
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
 
     ffmpeg = shutil.which("ffmpeg")
-    p.add_argument('videofile', help='Input video file name. Should be: 720 pixels wide, 29.97 fps NTSC interlaced. See `--ffmpeg_pre_scale` and `--ffmpeg_post_scale` if needing to transform the video file to these specifications.')
-    p.add_argument('-o', required=True, help='Output subtitle filename without extension')
+    p.add_argument('videofile', help='Input video file name')
+    output_options = p.add_argument_group('Output Options')
+    output_options.add_argument('-o', metavar='', required=True, help='Output subtitle filename without extension')
+
     p.add_argument('-q', default=False, action='store_true', help='Suppress status output')
-    p.add_argument('--ffmpeg', default=ffmpeg, help='Path to a copy of the ffmpeg binary (default %s)' % ffmpeg)
-    p.add_argument('--ffmpeg_pre_scale', default=None, help='FFMpeg video filter options before scaling. Useful if additional scaling should happen before the video is scaled to 720 width.')
-    p.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is de-interlaced')
-    p.add_argument('--ccformat', default='srt', help='Output format xds, srt, scc, text (T1-4 only), raw or debug (default srt)')
-    p.add_argument('--lines', default=10, type=int, help='Number of lines to search for CC in the video, starting at the start line (default 10)')
-    p.add_argument('--start_line', default=0, type=int, help='Start at a particular line 0=topmost line')
-    p.add_argument('--text_tc1', default=False, action='store_true', help='Enables TeleCaption I text mode compatibility. Specify if there is occasional repeated text')
+
+    input_video_options = p.add_argument_group('Input Options')
+    input_video_options.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is progressive (i.e. de-interlaced)')
+    input_video_options.add_argument('--ffmpeg', metavar='', default=ffmpeg, help='Override the default path to the ffmpeg binary (default %s)' % ffmpeg)
+    input_video_options.add_argument('--ffmpeg_pre_scale', metavar='', default=None, help='FFMpeg video filter options before scaling.')
+
+    output_options.add_argument('--ccformat', metavar='', default='srt', 
+                                help=(
+                                    'Specify one or more comma separated output formats (e.g. srt,scc,text) \n'
+                                    '  srt   - SubRip subtitles (default)\n'
+                                    '  scc   - Scenarist Closed Captions\n'
+                                    '  text  - Plain text output (TEXT mode only)\n'
+                                    '  xds   - eXtended Data Services (XDS) data\n'
+                                    '  raw   - Raw caption data\n'
+                                    '  debug - Debug output'
+                                )
+    )
+
+    decoding_options = p.add_argument_group('Decoding Options')
+    decoding_options.add_argument('--text_tc1', default=False, action='store_true', help='Enables TeleCaption I text mode compatibility. Specify if there are occasional repeated characters in TEXT mode')
+    decoding_options.add_argument('--lines', metavar='', default=10, type=int, help='Number of lines to search for CC in the video, starting at the start line (default 10)')
+    decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start at a particular line 0=topmost line')
 
     args = p.parse_args()
 
