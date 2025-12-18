@@ -678,13 +678,13 @@ def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_paddin
     plt.legend()
     plt.show()
 
-def find_and_decode_rows(img, fixed_line = 0):
+def find_and_decode_rows(img, start_line):
     height, _ = img.shape
     rows_found = []
     field_0_idx = height
     max_search = height - 2
 
-    for row_idx in range(fixed_line, max_search):
+    for row_idx in range(start_line, max_search):
         if field_0_idx + 1 < row_idx:
             # break if the second field was skipped
             break
@@ -698,17 +698,18 @@ def find_and_decode_rows(img, fixed_line = 0):
                 preamble_match["bit_width"],
                 preamble_match["score"],
             )
+
             rows_found.append((row_idx, b1, b1_parity, b2, b2_parity))
             if field_0_idx == height:
                 field_0_idx = row_idx
 
     return rows_found
 
-def extract_closed_caption_bytes(img, fixed_line=0):
+def extract_closed_caption_bytes(img, start_line):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
     # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
     decoded_rows = []
-    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, fixed_line):
+    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line):
         control = (b1, b2) in ALL_CC_CONTROL_CODES
     
         # handle parity errors

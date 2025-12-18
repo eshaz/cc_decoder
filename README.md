@@ -33,7 +33,7 @@ Options
 =======
 ```
 $ cc_decoder.py --help
-usage: cc_decoder.py [-h] -o  [-q] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ccformat] [--lines] [--start_line] videofile
+usage: cc_decoder.py [-h] -o  [-q] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--lines] videofile
 
 Extracts CEA-608-E Closed Captions (line 21) data from a video file
 
@@ -56,13 +56,13 @@ Output Options:
 
 Input Options:
   --deinterlaced       Specify if the input video is progressive (i.e. de-interlaced)
-  --ffmpeg             Override the default path to the ffmpeg binary
+  --ffmpeg             Override the default path to the ffmpeg binary (default /home/ethan/bin/ffmpeg)
   --ffmpeg_pre_scale   FFMpeg video filter options before scaling.
+  --ffmpeg_hw_accel    FFMpeg `hwaccel` option (i.e. none,auto,vaapi,nvdec,etc...) (default none)
 
 Decoding Options:
+  --start_line         Start searching at a particular line 0=topmost line
   --lines              Number of lines to search for CC in the video, starting at the start line (default 10)
-  --start_line         Start at a particular line 0=topmost line
-
 ```
 
 Performance

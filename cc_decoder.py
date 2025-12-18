@@ -102,12 +102,12 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, fixed_line=None, quiet=False):
+    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, ffmpeg_hw_accel=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, quiet=False):
         self.ffmpeg_path = ffmpeg_path
-        self.ffmpeg_pre_scale = "" if ffmpeg_pre_scale is None else ffmpeg_pre_scale + ","
+        self.ffmpeg_pre_scale = ffmpeg_pre_scale
+        self.ffmpeg_hw_accel = ffmpeg_hw_accel
         self.deinterlaced = deinterlaced
         self.format = ccformat or 'srt'
-        self.fixed_line = fixed_line
         self.fpid = None
         self.start_line = start_line
         self.workingdir = ''
@@ -178,8 +178,9 @@ class ClosedCaptionFileDecoder(object):
             input_file,
             ffmpeg_path,
             ffmpeg_pre_scale,
+            ffmpeg_hw_accel,
             deinterlaced,
-            start_line,
+            start_line
     ):
         setproctitle(multiprocessing.current_process().name)
         try:
@@ -191,8 +192,10 @@ class ClosedCaptionFileDecoder(object):
             ffmpeg_cmd = [
                 ffmpeg_path,
                 "-loglevel", "error",
-                "-i", input_file, 
-                "-vf", f"{ffmpeg_pre_scale}scale={image_width}:-1:flags=neighbor,crop=iw:{start_line + image_height}:0:{start_line}{',interlace=lowpass=off' if deinterlaced else ''}",
+                "-hwaccel_device", "/dev/dri/renderD129",
+                *(["-hwaccel", ffmpeg_hw_accel] if ffmpeg_hw_accel else []),
+                "-i", input_file,
+                "-vf", f"format=gray8,{ffmpeg_pre_scale + ',' if ffmpeg_pre_scale else ''}scale={image_width}:-1:flags=neighbor{',interlace=lowpass=off' if deinterlaced else ''},crop=iw:{image_height}:0:0",
                 "-f", "rawvideo",
                 "-pix_fmt", "gray8",
                 "pipe:1"
@@ -214,7 +217,7 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, fixed_line=0))
+                tx.send(extract_closed_caption_bytes(image, start_line))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -253,6 +256,7 @@ class ClosedCaptionFileDecoder(object):
                     filename,
                     self.ffmpeg_path,
                     self.ffmpeg_pre_scale,
+                    self.ffmpeg_hw_accel,
                     self.deinterlaced,
                     self.start_line,
                 )
@@ -334,6 +338,7 @@ def main():
     input_video_options.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is progressive (i.e. de-interlaced)')
     input_video_options.add_argument('--ffmpeg', metavar='', default=ffmpeg, help='Override the default path to the ffmpeg binary (default %s)' % ffmpeg)
     input_video_options.add_argument('--ffmpeg_pre_scale', metavar='', default=None, help='FFMpeg video filter options before scaling.')
+    input_video_options.add_argument('--ffmpeg_hw_accel', metavar='', default=None, help='FFMpeg `hwaccel` option (i.e. none,auto,vaapi,nvdec,etc...) (default none)')
 
     output_options.add_argument('--ccformat', metavar='', default='srt', 
                                 help=(
@@ -348,14 +353,15 @@ def main():
     )
 
     decoding_options = p.add_argument_group('Decoding Options')
+    decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start searching at a particular line 0=topmost line')
     decoding_options.add_argument('--lines', metavar='', default=10, type=int, help='Number of lines to search for CC in the video, starting at the start line (default 10)')
-    decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start at a particular line 0=topmost line')
 
     args = p.parse_args()
 
     if args.videofile:
         decoder = ClosedCaptionFileDecoder(ffmpeg_path=args.ffmpeg,
                                            ffmpeg_pre_scale=args.ffmpeg_pre_scale,
+                                           ffmpeg_hw_accel=args.ffmpeg_hw_accel,
                                            deinterlaced=args.deinterlaced,
                                            ccformat=args.ccformat,
                                            lines=args.lines,
