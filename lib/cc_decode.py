@@ -1339,11 +1339,8 @@ class HTMLCaptionTrack(TextCaptionTrack):
         self._text_color = "text-white"
         self._text_style = ""
 
-        self.space_character = "&nbsp;"
-        self.line_break_character = "<br>"
-
     def get_html_start(self):
-        base_style = "body { font-family: monospace, monospace; background-color: black; }"
+        base_style = "body { font-family: monospace, monospace; background-color: black; line-height: 0.8; } pre { margin: 0; display: inline; }"
         text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; }"
         background_colors = ".background-transparent { background-color: transparent; }" + " ".join([f".background-{color_key.lower()} {{ background-color: {color_value}; }}" for color_key, color_value in self.colors.items()])
         background_st_colors = " ".join([f".background-{color_key.lower()}-semi-transparent {{ background-color: {color_value}{self.semi_transparent_alpha}; }}" for color_key, color_value in self.colors.items()])
@@ -1351,10 +1348,10 @@ class HTMLCaptionTrack(TextCaptionTrack):
 
         style_tag = "<style>" + " ".join([base_style, text_styles, background_colors, background_st_colors, text_colors]) + " </style>"
 
-        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>TEXT Channel {self._cc_track}</title>{style_tag}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>"
+        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>TEXT Channel {self._cc_track}</title>{style_tag}</head><body><pre class='{self._background_color} {self._text_color} {self._text_style}'>"
     
     def get_html_end(self):
-        return "</span></body></html>"
+        return "</pre></body></html>"
 
     def open(self):
         super().open()
@@ -1419,7 +1416,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
         elif "Background Transparent" in code:
             background_color = "background-transparent"           
 
-        # update span tag if any styles changed
+        # update pre tag if any styles changed
         if background_color != self._background_color:
             styles_updated = True
             self._background_color = background_color
@@ -1433,7 +1430,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
             self._text_style = text_style
 
         if styles_updated:
-            return f"{caption_text}</span><span class='{self._background_color} {self._text_color} {self._text_style}'>"
+            return f"{caption_text}</pre><pre class='{self._background_color} {self._text_color} {self._text_style}'>"
 
         return caption_text
     
@@ -1453,12 +1450,12 @@ class HTMLCaptionTrack(TextCaptionTrack):
         caption_text, has_writable = self.get_caption_text(data)
         if has_writable:
             if add_line_break:
-                caption_text += "<br>"
+                caption_text += self.line_break_character
             CaptionTrack.write_caption(self, data, frames)
             self._write(self.out, caption_text)
 
     def _write(self, out_func, caption_text):
-        out_func(caption_text)
+        out_func(caption_text.rstrip('\n'))
 
     def add_on_screen(self, data, frames):
         self._buffer_on_screen.append(data)
