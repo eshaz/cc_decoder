@@ -33,7 +33,7 @@ Options
 =======
 ```
 $ cc_decoder.py --help
-usage: cc_decoder.py [-h] -o  [-q] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--lines] videofile
+usage: cc_decoder.py [-h] -o  [-q] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--end_line] videofile
 
 Extracts CEA-608-E Closed Captions (line 21) data from a video file
 
@@ -49,6 +49,7 @@ Output Options:
   --ccformat           Specify one or more comma separated output formats (e.g. srt,scc,text) 
                          srt   - SubRip subtitles (default)
                          scc   - Scenarist Closed Captions
+                         html  - HTML output with styling and colors
                          text  - Plain text output (TEXT mode only)
                          xds   - eXtended Data Services (XDS) data
                          raw   - Raw caption data
@@ -61,9 +62,8 @@ Input Options:
   --ffmpeg_hw_accel    FFMpeg `hwaccel` option (i.e. none,auto,vaapi,nvdec,etc...) (default none)
 
 Decoding Options:
-  --start_line         Start at `start_line` when searching through the video 0=topmost line (default 0) 
+  --start_line         Start at `start_line` when searching through the video 0=topmost line (default 0)
   --end_line           End at `end_line` when searching through the video (default 10)
-  --lines              Number of lines to search for CC in the video, starting at the start line (default 10)
 ```
 
 Performance

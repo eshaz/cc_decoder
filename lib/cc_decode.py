@@ -1216,9 +1216,6 @@ class SRTCaptionTrack(TextCaptionTrack):
         if self.text_start_frame == 0:
             self.text_start_frame = frames
 
-    def global_text_reset(self, data, frames):
-        self.clear_text()
-
     def global_flip_buffers(self, data, frames):
         super().global_flip_buffers(data, frames)
         self.subtitle_start_frame = frames
@@ -1329,33 +1326,65 @@ class HTMLCaptionTrack(TextCaptionTrack):
             "Black": "#000000"
         }
         self.semi_transparent_alpha = "80" # appended to the end of the colors
+        self.styles = {
+            "Underline": "underline",
+            "Italics": "italics"
+        }
         self.colors_regex = r"\b(" + "|".join(self.colors) + r")\b"
-        self.styles = ["Underline", "Italics"]
         self.styles_regex = r"\b(" + "|".join(self.styles) + r")\b"
 
         self._background_color = "background-transparent"
         self._text_color = "text-white"
         self._text_style = ""
 
-    def generate_style_tag(self):
+    def get_html_start(self):
         base_style = "body { font-family: monospace, monospace; background-color: black; }"
         text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; }"
         background_colors = ".background-transparent { background-color: transparent; }" + " ".join([f".background-{color_key.lower()} {{ background-color: {color_value}; }}" for color_key, color_value in self.colors.items()])
         background_st_colors = " ".join([f".background-{color_key.lower()}-semi-transparent {{ background-color: {color_value}{self.semi_transparent_alpha}; }}" for color_key, color_value in self.colors.items()])
         text_colors = " ".join([f".text-{color_key.lower()} {{ color: {color_value}; }}" for color_key, color_value in self.colors.items()])
 
-        return "<style>" + " ".join([base_style, text_styles, background_colors, background_st_colors, text_colors]) + " </style>"
+        style_tag = "<style>" + " ".join([base_style, text_styles, background_colors, background_st_colors, text_colors]) + " </style>"
+
+        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><title>TEXT Channel {self._cc_track}</title>{style_tag}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>"
     
+    def get_html_end(self):
+        return "</span></body></html>"
+
+    def open(self):
+        super().open()
+        self.out(self.get_html_start())
+
     def open_text(self):
         super().open_text()
-        self.out_text(f"<!DOCTYPE html><html><head><meta charset='UTF-8'><title>TEXT Channel {self._cc_track}</title>{self.generate_style_tag()}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>")
+        self.out_text(self.get_html_start())
 
     def close(self):
-        self.out_text("</span></body></html>")
-        super().close()
+        html_end = self.get_html_end()
+    
+        if self.f is not None:
+            self.out(html_end)
+            self.f.close()
+        if self.f_text is not None:
+            self.out_text(html_end)
+            self.f_text.close()
 
-    def global_text_reset(self, data, frames):
-        self.clear_text()
+    def global_resume_direct(self, data, frames):
+        # start a new subtitle entry
+        super().global_resume_direct(data, frames)
+        self._roll_up_buffer = []
+
+    def global_erase_displayed_memory(self, data, frames):
+        # end the subtitle and write to the screen
+        if self.mode == "roll_up":
+            if len(self._roll_up_buffer) > 0:
+                self.write_caption(self._roll_up_buffer, frames, True)
+        else:
+            if len(self._buffer_on_screen) > 0:
+                self.write_caption(self._buffer_on_screen, frames, True)
+
+        # clear the on screen buffer
+        super().global_erase_displayed_memory(data, frames)
 
     def handle_row(self, code, caption_text, current_row):
         return super().handle_row(code, caption_text, current_row, "<br>")
@@ -1372,7 +1401,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
         # check for updated styles
         style_match = re.findall(self.styles_regex, code)
         if style_match:
-            text_style = " ".join([s.lower() for s in style_match])
+            text_style = " ".join([self.styles[s] for s in style_match])
 
         color_match = re.search(self.colors_regex, code)
         if color_match:
@@ -1416,20 +1445,31 @@ class HTMLCaptionTrack(TextCaptionTrack):
         caption_text, has_writable = self.get_caption_text(data)
         if has_writable:
             CaptionTrack.write_text(self, data, frames)
-            # remove the last linebreak since one will be added by print
-            caption_text = re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group()), caption_text)
+            self._write(self.out_text, caption_text)
 
-            self.out_text(caption_text)
+    def write_caption(self, data, frames, add_line_break = False):
+        caption_text, has_writable = self.get_caption_text(data)
+        if has_writable:
+            if add_line_break:
+                caption_text += "<br>"
+            CaptionTrack.write_caption(self, data, frames)
+            self._write(self.out, caption_text)
+
+    def _write(self, out_func, caption_text):
+        caption_text = re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group()), caption_text)
+        caption_text = re.sub(r"^ ", "&nbsp;", caption_text)
+        out_func(caption_text)
 
     def add_on_screen(self, data, frames):
-        pass
+        self._buffer_on_screen.append(data)
+        # write the onscreen buffer to screen
+        self.write_caption(self._buffer_on_screen, frames, True)
 
     def add_off_screen(self, data):
-        pass
+        self._buffer_off_screen.append(data)
     
     def add_on_screen_roll_up(self, data, frames):
-        pass
-
+        self._roll_up_buffer.append(data)
 
 class CaptionTrackFactory():
     def __init__(self, track_class, output_filename, options):
