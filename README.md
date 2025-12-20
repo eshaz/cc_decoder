@@ -61,7 +61,8 @@ Input Options:
   --ffmpeg_hw_accel    FFMpeg `hwaccel` option (i.e. none,auto,vaapi,nvdec,etc...) (default none)
 
 Decoding Options:
-  --start_line         Start searching at a particular line 0=topmost line
+  --start_line         Start at `start_line` when searching through the video 0=topmost line (default 0) 
+  --end_line           End at `end_line` when searching through the video (default 10)
   --lines              Number of lines to search for CC in the video, starting at the start line (default 10)
 ```
 

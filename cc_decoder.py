@@ -102,19 +102,25 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path=None, ffmpeg_pre_scale=None, ffmpeg_hw_accel=None, deinterlaced=False, ccformat=None, start_line=0, lines=10, quiet=False):
+    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = ffmpeg_pre_scale
         self.ffmpeg_hw_accel = ffmpeg_hw_accel
         self.deinterlaced = deinterlaced
         self.format = ccformat or 'srt'
         self.fpid = None
+
         self.start_line = start_line
+        self.end_line = end_line
+
+        if self.start_line > self.end_line:
+            raise Exception("`start_line` cannot be greater than `end_line`")
+
         self.workingdir = ''
         self.quiet = quiet
 
         self.image_width = 720
-        self.image_height = lines
+        self.image_height = self.end_line + 1
         self.caption_count = 0
         self.frame_count = 0
 
@@ -180,7 +186,8 @@ class ClosedCaptionFileDecoder(object):
             ffmpeg_pre_scale,
             ffmpeg_hw_accel,
             deinterlaced,
-            start_line
+            start_line,
+            end_line
     ):
         setproctitle(multiprocessing.current_process().name)
         try:
@@ -188,6 +195,7 @@ class ClosedCaptionFileDecoder(object):
                 raise RuntimeError('Could not find ffmpeg at %s' % ffmpeg_path)
 
             image_size = image_width * image_height
+            search_lines = end_line - start_line
 
             ffmpeg_cmd = [
                 ffmpeg_path,
@@ -217,7 +225,7 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, start_line))
+                tx.send(extract_closed_caption_bytes(image, start_line, search_lines))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -259,6 +267,7 @@ class ClosedCaptionFileDecoder(object):
                     self.ffmpeg_hw_accel,
                     self.deinterlaced,
                     self.start_line,
+                    self.end_line + 1,
                 )
             )
             image_decoder_process.start()
@@ -353,8 +362,8 @@ def main():
     )
 
     decoding_options = p.add_argument_group('Decoding Options')
-    decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start searching at a particular line 0=topmost line')
-    decoding_options.add_argument('--lines', metavar='', default=10, type=int, help='Number of lines to search for CC in the video, starting at the start line (default 10)')
+    decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start at `start_line` when searching through the video 0=topmost line (default 0)')
+    decoding_options.add_argument('--end_line', metavar='', default=10, type=int, help='End at `end_line` when searching through the video (default 10)')
 
     args = p.parse_args()
 
@@ -364,9 +373,9 @@ def main():
                                            ffmpeg_hw_accel=args.ffmpeg_hw_accel,
                                            deinterlaced=args.deinterlaced,
                                            ccformat=args.ccformat,
-                                           lines=args.lines,
-                                           quiet=args.q,
-                                           start_line=args.start_line)
+                                           start_line=args.start_line,
+                                           end_line=args.end_line,
+                                           quiet=args.q)
         exit(decoder.decode(args.videofile, args.o))
 
 if __name__ == '__main__':

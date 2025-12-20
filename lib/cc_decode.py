@@ -678,17 +678,16 @@ def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_paddin
     plt.legend()
     plt.show()
 
-def find_and_decode_rows(img, start_line):
-    height, _ = img.shape
+def find_and_decode_rows(img, start_line, search_lines):
     rows_found = []
-    field_0_idx = height
-    max_search = height - 2
+    field_0_idx = None
 
-    for row_idx in range(start_line, max_search):
-        if field_0_idx + 1 < row_idx:
+    for row_idx in range(0, search_lines):
+        if field_0_idx and field_0_idx + 1 < row_idx:
             # break if the second field was skipped
             break
-        preamble_match = sync_to_preamble(img, row_idx)
+        start_idx = row_idx + start_line
+        preamble_match = sync_to_preamble(img, start_idx)
 
         if preamble_match is not None and preamble_match["score"] > 0.7:
             b1, b1_parity, b2, b2_parity = decode_bytes(
@@ -699,17 +698,17 @@ def find_and_decode_rows(img, start_line):
                 preamble_match["score"],
             )
 
-            rows_found.append((row_idx, b1, b1_parity, b2, b2_parity))
-            if field_0_idx == height:
+            rows_found.append((start_idx, b1, b1_parity, b2, b2_parity))
+            if field_0_idx == None:
                 field_0_idx = row_idx
 
     return rows_found
 
-def extract_closed_caption_bytes(img, start_line):
+def extract_closed_caption_bytes(img, start_line, search_lines):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
     # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
     decoded_rows = []
-    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line):
+    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines):
         control = (b1, b2) in ALL_CC_CONTROL_CODES
     
         # handle parity errors
