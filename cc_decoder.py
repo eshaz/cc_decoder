@@ -86,6 +86,7 @@ from lib.cc_decode import (
     decode_captions_raw,
     decode_to_scc,
     decode_to_text,
+    decode_to_html,
     decode_captions_debug,
     extract_closed_caption_bytes,
     decode_xds_packets
@@ -98,6 +99,7 @@ class ClosedCaptionFileDecoder(object):
     DECODERS = {'srt': decode_to_srt,
                 'scc': decode_to_scc,
                 'text': decode_to_text,
+                'html': decode_to_html,
                 'raw': decode_captions_raw,
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
@@ -355,6 +357,7 @@ def main():
                                     '  srt   - SubRip subtitles (default)\n'
                                     '  scc   - Scenarist Closed Captions\n'
                                     '  text  - Plain text output (TEXT mode only)\n'
+                                    '  html  - HTML output with styling (TEXT mode only)\n'
                                     '  xds   - eXtended Data Services (XDS) data\n'
                                     '  raw   - Raw caption data\n'
                                     '  debug - Debug output'

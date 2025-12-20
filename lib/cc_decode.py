@@ -49,6 +49,8 @@ import re
 import sys
 import math
 
+from html import escape
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -198,10 +200,10 @@ BACKGROUND_COLOR_CODES = {
 CC1_BACKGROUND_CHARS = { (0x10,x): y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC3
 CC2_BACKGROUND_CHARS = { (0x18,x): y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC4
 
-CC1_BACKGROUND_CHARS.update( { (0x17, 0x2D) : 'Background transparent',
+CC1_BACKGROUND_CHARS.update( { (0x17, 0x2D) : 'Background Transparent',
                                (0x17, 0x2E) : 'Foreground Black ',
                                (0x17, 0x2F) : 'Foreground Black Underline', } )  # Also CC3
-CC2_BACKGROUND_CHARS.update( { (0x1F, 0xAD) : 'Background transparent',
+CC2_BACKGROUND_CHARS.update( { (0x1F, 0xAD) : 'Background Transparent',
                                (0x1F, 0x2E) : 'Foreground Black ',
                                (0x1F, 0x2F) : 'Foreground Black Underline', } )  # Also CC4
 
@@ -1067,11 +1069,66 @@ class TextCaptionTrack(CaptionTrack):
         
         self.prev_char = code
         return code
+    
+    def handle_row(self, code, caption_text, current_row, line_break = "\n"):
+        match = re.search(r'row (?P<row_number>\d+)$', code)
+        if match:
+            row = int(match.group("row_number"))
+            if current_row is not None and current_row < row:
+                caption_text += line_break
+            current_row = row
+
+        return caption_text, current_row
+    
+    def handle_cr(self, code, caption_text, line_break = "\n"):
+        if code.endswith("Carriage Return"):
+            caption_text += line_break
+
+        return caption_text
+    
+    def handle_bs(self, code, caption_text):
+        if code.endswith("Backspace"):
+            caption_text = caption_text[0:-1]
+
+        return caption_text
+
+    def handle_tab(self, code, caption_text, space_character = " "):
+        if "Tab" in code:
+            tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
+            if tab_match:
+                tab = int(tab_match["tab_offset"])
+                tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
+                caption_text += space_character * tab
+
+        return caption_text
+
+    def handle_indent(self, code, caption_text, space_character = " "):
+        if "Indent" in code:
+            intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
+            if intent_match:
+                indent = int(intent_match["indent_offset"])
+                caption_text += space_character * indent
+        
+        return caption_text
+    
+    def handle_character(self, code, caption_text, byte1, byte2):
+        code = decode_byte_pair(False, byte1, byte2, False)
+        has_writable = False
+        if code is not None:
+            for char in str(code):
+               if char != " ":
+                   has_writable = True
+               caption_text += self.dedupe_bad_data_from_text(char)
+
+        return caption_text, has_writable
+    
+    def handle_style(self, code, caption_text):
+        return caption_text
 
     def get_caption_text(self, data):
         current_row = None
         caption_text = ""
-        has_printable = False
+        has_writable = False
         
         for decoded_row in data:
             if decoded_row is None:
@@ -1084,40 +1141,17 @@ class TextCaptionTrack(CaptionTrack):
             if control:
                 # ignore control codes with bad parity
                 if byte1_parity and byte2_parity:
-                    match = re.search(r'row (?P<row_number>\d+)$', code)
-                    if match:
-                        row = int(match.group("row_number"))
-                        if current_row is not None and current_row < row:
-                            caption_text += "\n"
-                        current_row = row
-                    elif code.endswith("Carriage Return"):
-                        caption_text += "\n"
-                    elif code.endswith("Backspace"):
-                        caption_text = caption_text[0:-1]
-                    elif "Tab" in code:
-                        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
-                        if tab_match:
-                            tab = int(tab_match["tab_offset"])
-                            tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
-                            caption_text += " " * tab
-                    elif "Indent" in code:
-                        intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
-                        if intent_match:
-                            indent = int(intent_match["indent_offset"])
-                            caption_text += " " * indent
-                    else:
-                        # probably don't add anything here if the code is not printable
-                        pass
+                    caption_text, current_row = self.handle_row(code, caption_text, current_row)
+                    caption_text = self.handle_cr(code, caption_text)
+                    caption_text = self.handle_bs(code, caption_text)
+                    caption_text = self.handle_tab(code, caption_text)
+                    caption_text = self.handle_indent(code, caption_text)
+                    caption_text = self.handle_style(code, caption_text)
             else:
                 # get only a printable code (no byte values)
-                code = decode_byte_pair(False, byte1, byte2, False)
-                if code is not None:
-                    for char in str(code):
-                       if char != " ":
-                           has_printable = True
-                       caption_text += self.dedupe_bad_data_from_text(char)
+                caption_text, has_writable = self.handle_character(code, caption_text, byte1, byte2)
 
-        return caption_text, has_printable
+        return caption_text, has_writable
     
     # only enable text for .txt format
     def add_text(self, data, frames):
@@ -1144,8 +1178,8 @@ class TextCaptionTrack(CaptionTrack):
         self.previous_frames = frames
 
     def write_text(self, data, frames):
-        caption_text, has_printable = self.get_caption_text(data)
-        if has_printable:
+        caption_text, has_writable = self.get_caption_text(data)
+        if has_writable:
             super().write_text(data, frames)
             # remove the last linebreak since one will be added by print
             self.out_text(caption_text.rstrip('\n'))
@@ -1245,8 +1279,8 @@ class SRTCaptionTrack(TextCaptionTrack):
     
     def write_text(self, data, frames):
         self.text_end_frame = frames
-        caption_text, has_printable = self.get_caption_text(data)
-        if has_printable:
+        caption_text, has_writable = self.get_caption_text(data)
+        if has_writable:
             super().write_text(data, frames)
             self._write(
                 self.out_text,
@@ -1285,6 +1319,153 @@ class SRTCaptionTrack(TextCaptionTrack):
         minutes = int((seconds - 3600 * hours) / 60)
         seconds_disp = seconds - (minutes * 60 + hours * 3600)
         return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
+
+class HTMLCaptionTrack(TextCaptionTrack):
+    def __init__(self, cc_track, output_filename, options, extension = "html"):
+        super().__init__(cc_track, output_filename, options, extension)
+        self._style_tag = (
+"""
+<style>
+:root {
+  /* color variables */
+  --white: white;
+  --green: green;
+  --blue: blue;
+  --cyan: cyan;
+  --red: red;
+  --yellow: yellow;
+  --magenta: magenta;
+  --black: black;
+}
+
+body { font-family: monospace, monospace; background-color: black; }
+
+.text-white { color: var(--white); }
+.text-green { color: var(--green); }
+.text-blue { color: var(--blue); }
+.text-cyan { color: var(--cyan); }
+.text-red { color: var(--red); }
+.text-yellow { color: var(--yellow); }
+.text-magenta { color: var(--magenta); }
+.text-black { color: var(--black); }
+
+.background-transparent { background-color: none; }
+.background-white { background-color: var(--white); }
+.background-green { background-color: var(--green); }
+.background-blue { background-color: var(--blue); }
+.background-cyan { background-color: var(--cyan); }
+.background-red { background-color: var(--red); }
+.background-yellow { background-color: var(--yellow); }
+.background-magenta { background-color: var(--magenta); }
+.background-black { background-color: var(--black); }
+
+.background-white-semi-transparent { background-color: rgb(var(--white) / 0.5); }
+.background-green-semi-transparent { background-color: rgb(var(--green) / 0.5); }
+.background-blue-semi-transparent { background-color: rgb(var(--blue) / 0.5); }
+.background-cyan-semi-transparent { background-color: rgb(var(--cyan) / 0.5); }
+.background-red-semi-transparent { background-color: rgb(var(--red) / 0.5); }
+.background-yellow-semi-transparent { background-color: rgb(var(--yellow) / 0.5); }
+.background-magenta-semi-transparent { background-color: rgb(var(--magenta) / 0.5); }
+.background-black-semi-transparent { background-color: rgb(var(--black) / 0.5); }
+
+.underline { text-decoration: underline; }
+.italics { font-style: italic; }
+</style>
+""")
+        self._background_color = "background-black"
+        self._text_color = "text-white"
+        self._text_style = ""
+    
+    def open_text(self):
+        super().open_text()
+        self.out_text(f"<html><head>{self._style_tag}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>")
+
+    def close(self):
+        self.out_text("</span></body></html>")
+        super().close()
+
+    def global_text_reset(self, data, frames):
+        self.clear_text()
+
+    def handle_row(self, code, caption_text, current_row):
+        return super().handle_row(code, caption_text, current_row, "<br>")
+    
+    def handle_cr(self, code, caption_text):
+        return super().handle_cr(code, caption_text, "<br>")
+    
+    def handle_tab(self, code, caption_text):
+        return super().handle_tab(code, caption_text, "&nbsp;")
+    
+    def handle_indent(self, code, caption_text):
+        return super().handle_indent(code, caption_text, "&nbsp;")
+    
+    def handle_style(self, code, caption_text):
+        styles_updated = False
+        background_color = self._background_color
+        text_color = self._text_color
+        text_style = self._text_style
+
+        # check for updated styles
+        style_match = re.findall(r"\b(Underline|Italics)\b", code)
+        if style_match:
+            text_style = " ".join([s.lower() for s in style_match])
+
+        color_match = re.search(r"\b(White|Green|Blue|Cyan|Red|Yellow|Magenta|Black)\b", code)
+        if color_match:
+            color = color_match[0].lower()
+            if "Background" in code:
+                if "Semi-Transparent" in code:
+                    background_color = "background-semi-transparent-" + color
+                else:
+                    background_color = "background-" + color
+            else:
+                if not style_match:
+                    # color update without style assumes the style is cleared
+                    text_style = ""
+
+                text_color = "text-" + color
+        elif "Background Transparent" in code:
+            background_color = "background-transparent"           
+
+        # update span tag if any styles changed
+        if background_color != self._background_color:
+            styles_updated = True
+            self._background_color = background_color
+
+        if text_color != self._text_color:
+            styles_updated = True
+            self._text_color = text_color
+
+        if text_style != self._text_style:
+            styles_updated = True
+            self._text_style = text_style
+
+        if styles_updated:
+            return f"{caption_text}</span><span class='{self._background_color} {self._text_color} {self._text_style}'>"
+
+        return caption_text
+    
+    def dedupe_bad_data_from_text(self, code):
+        return escape(super().dedupe_bad_data_from_text(code))
+
+    def write_text(self, data, frames):
+        caption_text, has_writable = self.get_caption_text(data)
+        if has_writable:
+            CaptionTrack.write_text(self, data, frames)
+            # remove the last linebreak since one will be added by print
+            caption_text = re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group()), caption_text)
+
+            self.out_text(caption_text)
+
+    def add_on_screen(self, data, frames):
+        pass
+
+    def add_off_screen(self, data):
+        pass
+    
+    def add_on_screen_roll_up(self, data, frames):
+        pass
+
 
 class CaptionTrackFactory():
     def __init__(self, track_class, output_filename, options):
@@ -1370,6 +1551,24 @@ def decode_to_srt(rx, output_filename, options):
 def decode_to_text(rx, output_filename, options):
     setproctitle(current_process().name)
     track_factory = CaptionTrackFactory(TextCaptionTrack, output_filename, options)
+        
+    frame = 0        
+    while True:
+        try:
+            rows = rx.recv()
+            if rows == "DONE":
+                break
+        except:
+            break
+
+        track_factory.add_data(rows, frame)
+        frame += 1
+
+    track_factory.close_tracks()
+
+def decode_to_html(rx, output_filename, options):
+    setproctitle(current_process().name)
+    track_factory = CaptionTrackFactory(HTMLCaptionTrack, output_filename, options)
         
     frame = 0        
     while True:
