@@ -1055,6 +1055,8 @@ class TextCaptionTrack(CaptionTrack):
 
         self.prev_char = None
         self.previous_frames = 0
+        self.space_character = " "
+        self.line_break_character = "\n"
 
     def global_text_reset(self, data, frames):
         self.clear_text()
@@ -1070,19 +1072,19 @@ class TextCaptionTrack(CaptionTrack):
         self.prev_char = code
         return code
     
-    def handle_row(self, code, caption_text, current_row, line_break = "\n"):
+    def handle_row(self, code, caption_text, current_row):
         match = re.search(r'row (?P<row_number>\d+)$', code)
         if match:
             row = int(match.group("row_number"))
             if current_row is not None and current_row < row:
-                caption_text += line_break
+                caption_text += self.line_break_character
             current_row = row
 
         return caption_text, current_row
     
-    def handle_cr(self, code, caption_text, line_break = "\n"):
+    def handle_cr(self, code, caption_text):
         if code.endswith("Carriage Return"):
-            caption_text += line_break
+            caption_text += self.line_break_character
 
         return caption_text
     
@@ -1092,20 +1094,20 @@ class TextCaptionTrack(CaptionTrack):
 
         return caption_text
 
-    def handle_tab(self, code, caption_text, space_character = " "):
+    def handle_tab(self, code, caption_text):
         tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
         if tab_match:
             tab = int(tab_match["tab_offset"])
             tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
-            caption_text += space_character * tab
+            caption_text += self.space_character * tab
 
         return caption_text
 
-    def handle_indent(self, code, caption_text, space_character = " "):
+    def handle_indent(self, code, caption_text):
         intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
         if intent_match:
             indent = int(intent_match["indent_offset"])
-            caption_text += space_character * indent
+            caption_text += self.space_character * indent
         
         return caption_text
     
@@ -1337,6 +1339,9 @@ class HTMLCaptionTrack(TextCaptionTrack):
         self._text_color = "text-white"
         self._text_style = ""
 
+        self.space_character = "&nbsp;"
+        self.line_break_character = "<br>"
+
     def get_html_start(self):
         base_style = "body { font-family: monospace, monospace; background-color: black; }"
         text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; }"
@@ -1346,7 +1351,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
 
         style_tag = "<style>" + " ".join([base_style, text_styles, background_colors, background_st_colors, text_colors]) + " </style>"
 
-        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><title>TEXT Channel {self._cc_track}</title>{style_tag}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>"
+        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>TEXT Channel {self._cc_track}</title>{style_tag}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>"
     
     def get_html_end(self):
         return "</span></body></html>"
@@ -1386,12 +1391,6 @@ class HTMLCaptionTrack(TextCaptionTrack):
         # clear the on screen buffer
         super().global_erase_displayed_memory(data, frames)
 
-    def handle_row(self, code, caption_text, current_row):
-        return super().handle_row(code, caption_text, current_row, "<br>")
-    
-    def handle_cr(self, code, caption_text):
-        return super().handle_cr(code, caption_text, "<br>")
-    
     def handle_style(self, code, caption_text):
         styles_updated = False
         background_color = self._background_color
@@ -1439,7 +1438,10 @@ class HTMLCaptionTrack(TextCaptionTrack):
         return caption_text
     
     def dedupe_bad_data_from_text(self, code):
-        return escape(super().dedupe_bad_data_from_text(code))
+        character = super().dedupe_bad_data_from_text(code)
+        character = escape(character)
+        character = character.replace(" ", self.space_character)
+        return character
 
     def write_text(self, data, frames):
         caption_text, has_writable = self.get_caption_text(data)
@@ -1456,8 +1458,6 @@ class HTMLCaptionTrack(TextCaptionTrack):
             self._write(self.out, caption_text)
 
     def _write(self, out_func, caption_text):
-        caption_text = re.sub(r" {2,}", lambda m: "&nbsp;" * len(m.group()), caption_text)
-        caption_text = re.sub(r"^ ", "&nbsp;", caption_text)
         out_func(caption_text)
 
     def add_on_screen(self, data, frames):
