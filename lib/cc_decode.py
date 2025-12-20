@@ -1093,27 +1093,24 @@ class TextCaptionTrack(CaptionTrack):
         return caption_text
 
     def handle_tab(self, code, caption_text, space_character = " "):
-        if "Tab" in code:
-            tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
-            if tab_match:
-                tab = int(tab_match["tab_offset"])
-                tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
-                caption_text += space_character * tab
+        tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
+        if tab_match:
+            tab = int(tab_match["tab_offset"])
+            tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
+            caption_text += space_character * tab
 
         return caption_text
 
     def handle_indent(self, code, caption_text, space_character = " "):
-        if "Indent" in code:
-            intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
-            if intent_match:
-                indent = int(intent_match["indent_offset"])
-                caption_text += space_character * indent
+        intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
+        if intent_match:
+            indent = int(intent_match["indent_offset"])
+            caption_text += space_character * indent
         
         return caption_text
     
-    def handle_character(self, code, caption_text, byte1, byte2):
+    def handle_character(self, code, caption_text, has_writable, byte1, byte2):
         code = decode_byte_pair(False, byte1, byte2, False)
-        has_writable = False
         if code is not None:
             for char in str(code):
                if char != " ":
@@ -1149,7 +1146,7 @@ class TextCaptionTrack(CaptionTrack):
                     caption_text = self.handle_style(code, caption_text)
             else:
                 # get only a printable code (no byte values)
-                caption_text, has_writable = self.handle_character(code, caption_text, byte1, byte2)
+                caption_text, has_writable = self.handle_character(code, caption_text, has_writable, byte1, byte2)
 
         return caption_text, has_writable
     
@@ -1161,13 +1158,10 @@ class TextCaptionTrack(CaptionTrack):
         # when there's a data interruption, the decoder resets the cursor to first column
         # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
         # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
-        if (
-            "Indent" in code
-        ):
-            intent_match = re.search(r'.*Indent (?P<indent_offset>\d+)', code)
-            if intent_match:
-                indent = int(intent_match["indent_offset"])
-                self._text_cursor = indent
+        intent_match = re.search(r'.*Indent (?P<indent_offset>\d+)', code)
+        if intent_match:
+            indent = int(intent_match["indent_offset"])
+            self._text_cursor = indent
 
         if 'Carriage Return' in code and code == self.prev_code:
             self.write_text(self._text_buffer[:self._text_cursor], frames)
@@ -1323,62 +1317,38 @@ class SRTCaptionTrack(TextCaptionTrack):
 class HTMLCaptionTrack(TextCaptionTrack):
     def __init__(self, cc_track, output_filename, options, extension = "html"):
         super().__init__(cc_track, output_filename, options, extension)
-        self._style_tag = (
-"""
-<style>
-:root {
-  /* color variables */
-  --white: white;
-  --green: green;
-  --blue: blue;
-  --cyan: cyan;
-  --red: red;
-  --yellow: yellow;
-  --magenta: magenta;
-  --black: black;
-}
+        # html colors, must be in hex format
+        self.colors = {
+            "White": "#FFFFFF",
+            "Green": "#00FF00",
+            "Blue": "#0000FF",
+            "Cyan": "#00FFFF",
+            "Red": "#FF0000",
+            "Yellow": "#FFFF00",
+            "Magenta": "#FF00FF",
+            "Black": "#000000"
+        }
+        self.semi_transparent_alpha = "80" # appended to the end of the colors
+        self.colors_regex = r"\b(" + "|".join(self.colors) + r")\b"
+        self.styles = ["Underline", "Italics"]
+        self.styles_regex = r"\b(" + "|".join(self.styles) + r")\b"
 
-body { font-family: monospace, monospace; background-color: black; }
-
-.text-white { color: var(--white); }
-.text-green { color: var(--green); }
-.text-blue { color: var(--blue); }
-.text-cyan { color: var(--cyan); }
-.text-red { color: var(--red); }
-.text-yellow { color: var(--yellow); }
-.text-magenta { color: var(--magenta); }
-.text-black { color: var(--black); }
-
-.background-transparent { background-color: none; }
-.background-white { background-color: var(--white); }
-.background-green { background-color: var(--green); }
-.background-blue { background-color: var(--blue); }
-.background-cyan { background-color: var(--cyan); }
-.background-red { background-color: var(--red); }
-.background-yellow { background-color: var(--yellow); }
-.background-magenta { background-color: var(--magenta); }
-.background-black { background-color: var(--black); }
-
-.background-white-semi-transparent { background-color: rgb(var(--white) / 0.5); }
-.background-green-semi-transparent { background-color: rgb(var(--green) / 0.5); }
-.background-blue-semi-transparent { background-color: rgb(var(--blue) / 0.5); }
-.background-cyan-semi-transparent { background-color: rgb(var(--cyan) / 0.5); }
-.background-red-semi-transparent { background-color: rgb(var(--red) / 0.5); }
-.background-yellow-semi-transparent { background-color: rgb(var(--yellow) / 0.5); }
-.background-magenta-semi-transparent { background-color: rgb(var(--magenta) / 0.5); }
-.background-black-semi-transparent { background-color: rgb(var(--black) / 0.5); }
-
-.underline { text-decoration: underline; }
-.italics { font-style: italic; }
-</style>
-""")
-        self._background_color = "background-black"
+        self._background_color = "background-transparent"
         self._text_color = "text-white"
         self._text_style = ""
+
+    def generate_style_tag(self):
+        base_style = "body { font-family: monospace, monospace; background-color: black; }"
+        text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; }"
+        background_colors = ".background-transparent { background-color: transparent; }" + " ".join([f".background-{color_key.lower()} {{ background-color: {color_value}; }}" for color_key, color_value in self.colors.items()])
+        background_st_colors = " ".join([f".background-{color_key.lower()}-semi-transparent {{ background-color: {color_value}{self.semi_transparent_alpha}; }}" for color_key, color_value in self.colors.items()])
+        text_colors = " ".join([f".text-{color_key.lower()} {{ color: {color_value}; }}" for color_key, color_value in self.colors.items()])
+
+        return "<style>" + " ".join([base_style, text_styles, background_colors, background_st_colors, text_colors]) + " </style>"
     
     def open_text(self):
         super().open_text()
-        self.out_text(f"<html><head>{self._style_tag}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>")
+        self.out_text(f"<!DOCTYPE html><html><head><meta charset='UTF-8'><title>TEXT Channel {self._cc_track}</title>{self.generate_style_tag()}</head><body><span class='{self._background_color} {self._text_color} {self._text_style}'>")
 
     def close(self):
         self.out_text("</span></body></html>")
@@ -1393,12 +1363,6 @@ body { font-family: monospace, monospace; background-color: black; }
     def handle_cr(self, code, caption_text):
         return super().handle_cr(code, caption_text, "<br>")
     
-    def handle_tab(self, code, caption_text):
-        return super().handle_tab(code, caption_text, "&nbsp;")
-    
-    def handle_indent(self, code, caption_text):
-        return super().handle_indent(code, caption_text, "&nbsp;")
-    
     def handle_style(self, code, caption_text):
         styles_updated = False
         background_color = self._background_color
@@ -1406,11 +1370,11 @@ body { font-family: monospace, monospace; background-color: black; }
         text_style = self._text_style
 
         # check for updated styles
-        style_match = re.findall(r"\b(Underline|Italics)\b", code)
+        style_match = re.findall(self.styles_regex, code)
         if style_match:
             text_style = " ".join([s.lower() for s in style_match])
 
-        color_match = re.search(r"\b(White|Green|Blue|Cyan|Red|Yellow|Magenta|Black)\b", code)
+        color_match = re.search(self.colors_regex, code)
         if color_match:
             color = color_match[0].lower()
             if "Background" in code:
