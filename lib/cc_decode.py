@@ -167,12 +167,11 @@ CONTROL_CODES = {
     (0x14, 0x22): 'Reserved (Alarm Off)',       (0x14, 0x23): 'Reserved (Alarm On)',
     (0x14, 0x24): 'Delete to End Of Row',       (0x14, 0x25): 'Roll-Up Captions-2 Rows',
     (0x14, 0x26): 'Roll-Up Captions-3 Rows',    (0x14, 0x27): 'Roll-Up Captions-4 Rows',
-    (0x14, 0x28): 'Flash On',                   (0x14, 0x29): 'Resume Direct Captioning',
-    (0x14, 0x2A): 'Text Restart',               (0x14, 0x2B): 'Resume Text Display',
-    (0x14, 0x2C): 'Erase Displayed Memory',     (0x14, 0x2D): 'Carriage Return',
-    (0x14, 0x2E): 'Erase Non-Displayed Memory', (0x14, 0x2F): 'End of Caption (flip memory)',
-    (0x17, 0x21): 'Tab Offset 1',               (0x17, 0x22): 'Tab Offset 2',
-    (0x17, 0x23): 'Tab Offset 3',
+    (0x14, 0x2A): 'Text Restart',               (0x14, 0x29): 'Resume Direct Captioning',
+    (0x14, 0x2C): 'Erase Displayed Memory',     (0x14, 0x2B): 'Resume Text Display',
+    (0x14, 0x2E): 'Erase Non-Displayed Memory', (0x14, 0x2D): 'Carriage Return',
+    (0x17, 0x21): 'Tab Offset 1',               (0x14, 0x2F): 'End of Caption (flip memory)',
+    (0x17, 0x22): 'Tab Offset 2',               (0x17, 0x23): 'Tab Offset 3'
 }
 
 # This is an unofficial extension to the standard
@@ -200,12 +199,8 @@ BACKGROUND_COLOR_CODES = {
 CC1_BACKGROUND_CHARS = { (0x10,x): y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC3
 CC2_BACKGROUND_CHARS = { (0x18,x): y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC4
 
-CC1_BACKGROUND_CHARS.update( { (0x17, 0x2D) : 'Background Transparent',
-                               (0x17, 0x2E) : 'Foreground Black ',
-                               (0x17, 0x2F) : 'Foreground Black Underline', } )  # Also CC3
-CC2_BACKGROUND_CHARS.update( { (0x1F, 0xAD) : 'Background Transparent',
-                               (0x1F, 0x2E) : 'Foreground Black ',
-                               (0x1F, 0x2F) : 'Foreground Black Underline', } )  # Also CC4
+CC1_BACKGROUND_CHARS.update( { (0x17, 0x2D) : 'Background Transparent' } )  # Also CC3
+CC2_BACKGROUND_CHARS.update( { (0x1F, 0xAD) : 'Background Transparent' } )  # Also CC4
 
 ROLL_UP_LEN = {
     0x25: 2, # Roll-Up Captions-2 Rows
@@ -222,6 +217,8 @@ MID_ROW_CODES = {
     (0x11, 0x2A): 'Mid-row: Yellow',  (0x11, 0x2B): 'Mid-row: Yellow Underline',
     (0x11, 0x2C): 'Mid-row: Magenta', (0x11, 0x2D): 'Mid-row: Magenta Underline',
     (0x11, 0x2E): 'Mid-row: Italics', (0x11, 0x2F): 'Mid-row: Italics Underline',
+    (0x17, 0x2E): 'Mid-row: Black',   (0x17, 0x2F): 'Mid-row: Black Underline',
+    (0x14, 0x28): 'Mid-row: Flash On'
 }
 
 ## Preamble for odd columns except where it isn't
@@ -247,8 +244,8 @@ EVEN_PREAMBLE = {a + 0x20: b for (a, b) in PREAMBLE_ODD.items()}
 
 CC1_CONTROL_CODES = {(a[0], a[1]): 'CC1 ' + b for (a, b) in CONTROL_CODES.items()}
 CC2_CONTROL_CODES = {(a[0] == 0x14 and 0x1C or 0x1F, a[1]): 'CC2 ' + b for (a, b) in CONTROL_CODES.items()}
-CC1_MID_ROW_CODES = {(0x11, a[1]): 'CC1 ' + b for (a, b) in MID_ROW_CODES.items()}
-CC2_MID_ROW_CODES = {(0x19, a[1]): 'CC2 ' + b for (a, b) in MID_ROW_CODES.items()}
+CC1_MID_ROW_CODES = {(a[0],        a[1]): 'CC1 ' + b for (a, b) in MID_ROW_CODES.items()}
+CC2_MID_ROW_CODES = {(a[0] | 0x08, a[1]): 'CC2 ' + b for (a, b) in MID_ROW_CODES.items()}
 
 ## Columns headings 
 CC1_PREAMBLE_COLS = [0x11, 0x11, 0x12, 0x12, 0x15, 0x15, 0x16, 0x16, 0x17, 0x17, 0x10, 0x13, 0x13, 0x14, 0x14]
@@ -1362,7 +1359,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
 
     def get_html_start(self, channel_type):
         base_style = "body { font-family: monospace, monospace; background-color: black; } pre { margin: 0; display: inline; }"
-        text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; }"
+        text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; } @keyframes blink { 50% { color: transparent; } } .flashing { animation: blink step-start 1s infinite; }"
         background_colors = ".background-transparent { background-color: transparent; }" + " ".join([f".background-{color_key.lower()} {{ background-color: {color_value}; }}" for color_key, color_value in self.colors.items()])
         background_st_colors = " ".join([f".background-{color_key.lower()}-semi-transparent {{ background-color: {color_value}{self.semi_transparent_alpha}; }}" for color_key, color_value in self.colors.items()])
         text_colors = " ".join([f".text-{color_key.lower()} {{ color: {color_value}; }}" for color_key, color_value in self.colors.items()])
@@ -1449,6 +1446,9 @@ class HTMLCaptionTrack(TextCaptionTrack):
                 self._text_style = " ".join([self.styles[s] for s in style_match])
             elif is_pre:
                 self._text_style = self._default_text_style
+
+            if "Flash" in code:
+                self._text_style += " flashing"
 
         return f"{caption_text}</pre>{self.get_pre_tag()}"
     
