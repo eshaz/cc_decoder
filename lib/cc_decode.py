@@ -730,13 +730,13 @@ def extract_closed_caption_bytes(img, start_line, search_lines):
 
     return decoded_rows
     
-def get_output_function(extension, output_filename):
+def get_output_function(extension, output_filename, end="\n"):
     if output_filename is not None:
         f = open(output_filename + f".{extension}", 'w')
-        out_func = lambda out : print(out, file=f)
+        out_func = lambda out : print(out, end=end, file=f)
     else:
         f = None
-        out_func = print
+        out_func = lambda out : print(out, end=end)
 
     return out_func, f
 
@@ -824,17 +824,19 @@ class CaptionTrack:
         self._buffer_on_screen = []
         self._buffer_off_screen = []
         self._roll_up_buffer = []
-        self._text_buffer = np.ndarray(32, dtype=object)
+        self._text_buffer = []
         self._text_cursor = 0
+
+        self.output_end = "\n"
 
         self.f = None
         self.f_text = None
 
     def open(self):
-        self.out, self.f = get_output_function(self._cc_track + "." + self._extension, self._output_filename)
+        self.out, self.f = get_output_function(self._cc_track + "." + self._extension, self._output_filename, self.output_end)
 
     def open_text(self):
-        self.out_text, self.f_text = get_output_function(CC_CHANNEL_TO_TEXT_CHANNEL[self._cc_track] + "." + self._extension, self._output_filename)
+        self.out_text, self.f_text = get_output_function(CC_CHANNEL_TO_TEXT_CHANNEL[self._cc_track] + "." + self._extension, self._output_filename, self.output_end)
 
     def close(self):
         if self.f is not None:
@@ -951,14 +953,12 @@ class CaptionTrack:
         raise NotImplemented
     
     def add_text(self, data, frames):
-        self._text_buffer[self._text_cursor] = data
-        self._text_cursor = min(self._text_cursor + 1, len(self._text_buffer) - 1)
+        self._text_buffer.append(data)
 
     def clear_text(self):
-        self._text_buffer[:] = None
-        self._text_cursor = 0
+        self._text_buffer = []
     
-    def write_text(self, data, frames):
+    def write_text(self, frames):
         if self.f_text is None:
             self.open_text()
     
@@ -990,7 +990,7 @@ class SCCCaptionTrack(CaptionTrack):
 
     def global_start_text_mode(self, data, frames):
         super().global_start_text_mode(data, frames)
-        self.write_text([data], frames)
+        self.add_text(data, frames)
 
     def global_text_reset(self, data, frames):
         self.add_text(data, frames)
@@ -1022,12 +1022,12 @@ class SCCCaptionTrack(CaptionTrack):
         _, code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code:
-            self._write(self.out_text, self._text_buffer[:self._text_cursor], frames)
+            self._write(self.out_text, self._text_buffer, frames)
             self.clear_text()
 
-    def write_text(self, data, frames):        
-        super().write_text(data, frames)
-        self._write(self.out_text, data, frames)
+    def write_text(self, frames):
+        super().write_text(frames)
+        self._write(self.out_text, self._text_buffer, frames)
 
     def write_caption(self, data, frames):
         super().write_caption(data, frames)
@@ -1057,6 +1057,13 @@ class TextCaptionTrack(CaptionTrack):
         self.previous_frames = 0
         self.space_character = " "
         self.line_break_character = "\n"
+        self.output_end = ""
+
+    def close(self):
+        if len(self._text_buffer) > 0:
+            self.write_text(None)
+
+        super().close()
 
     def global_text_reset(self, data, frames):
         self.clear_text()
@@ -1111,7 +1118,7 @@ class TextCaptionTrack(CaptionTrack):
         
         return caption_text
     
-    def handle_character(self, code, caption_text, has_writable, byte1, byte2):
+    def handle_character(self, caption_text, has_writable, byte1, byte2):
         code = decode_byte_pair(False, byte1, byte2, False)
         if code is not None:
             for char in str(code):
@@ -1122,6 +1129,9 @@ class TextCaptionTrack(CaptionTrack):
         return caption_text, has_writable
     
     def handle_style(self, code, caption_text):
+        if "Mid-row" in code:
+            # mid row style updates add a space
+            caption_text += " "
         return caption_text
 
     def get_caption_text(self, data):
@@ -1129,16 +1139,9 @@ class TextCaptionTrack(CaptionTrack):
         caption_text = ""
         has_writable = False
         
-        for decoded_row in data:
-            if decoded_row is None:
-                # write a space?
-                continue
-
-            (_, code, control, byte1, byte1_parity, byte2, byte2_parity) = decoded_row
-
-            # add a line break if row advances
+        for _, code, control, byte1, byte1_parity, byte2, byte2_parity in data:
             if control:
-                # ignore control codes with bad parity
+                # repeated control codes should be filtered out at this point
                 if byte1_parity and byte2_parity:
                     caption_text, current_row = self.handle_row(code, caption_text, current_row)
                     caption_text = self.handle_cr(code, caption_text)
@@ -1148,37 +1151,39 @@ class TextCaptionTrack(CaptionTrack):
                     caption_text = self.handle_style(code, caption_text)
             else:
                 # get only a printable code (no byte values)
-                caption_text, has_writable = self.handle_character(code, caption_text, has_writable, byte1, byte2)
+                caption_text, has_writable = self.handle_character(caption_text, has_writable, byte1, byte2)
 
         return caption_text, has_writable
     
     # only enable text for .txt format
     def add_text(self, data, frames):
-        _, code, _, _, _, _, _ = data
+        _, code, control, _, _, _, _ = data
 
-        # compatibility with TeleCaption I decoder
-        # when there's a data interruption, the decoder resets the cursor to first column
-        # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
-        # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
-        intent_match = re.search(r'.*Indent (?P<indent_offset>\d+)', code)
-        if intent_match:
-            indent = int(intent_match["indent_offset"])
-            self._text_cursor = indent
+        super().add_text(data, frames)
 
-        if 'Carriage Return' in code and code == self.prev_code:
-            self.write_text(self._text_buffer[:self._text_cursor], frames)
-            self.clear_text()
-        else:
-            super().add_text(data, frames)
+        if control:
+            if code != self.prev_code:
+                # only handle control characters once
+                if 'Carriage Return' in code:
+                    self.write_text(frames)
+                    self.clear_text()
+                else:
+                    intent_match = re.search(r'.*Indent (?P<indent_offset>\d+)', code)
+                    if intent_match:
+                        # compatibility with TeleCaption I decoder
+                        # when there's a data interruption, the decoder resets the cursor to first column
+                        # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
+                        # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
+                        self._text_buffer = []
+                        # re-add the indent code
+                        super().add_text(data, frames)
 
         self.previous_frames = frames
 
-    def write_text(self, data, frames):
-        caption_text, has_writable = self.get_caption_text(data)
-        if has_writable:
-            super().write_text(data, frames)
-            # remove the last linebreak since one will be added by print
-            self.out_text(caption_text.rstrip('\n'))
+    def write_text(self, frames):
+        super().write_text(frames)
+        caption_text, _ = self.get_caption_text(self._text_buffer)
+        self.out_text(caption_text)
 
     def add_on_screen(self, data, frames):
         pass
@@ -1199,9 +1204,18 @@ class SRTCaptionTrack(TextCaptionTrack):
 
         self.text_count = 1
         self.text_start_frame = 0
+        self.text_current_frame = 0
         self.text_end_frame = 0
 
+        self.output_end = "\n"
+
         self.fps = 29.97
+
+    def close(self):
+        if len(self._text_buffer) > 0:
+            self.write_text(self.text_current_frame)
+
+        CaptionTrack.close(self)
 
     def global_resume_direct(self, data, frames):
         # start a new subtitle entry
@@ -1262,19 +1276,14 @@ class SRTCaptionTrack(TextCaptionTrack):
         #    self.subtitle_start_frame = frames
 
     def add_text(self, data, frames):
-        _, code, _, _, _, _, _ = data
+        super().add_text(data, frames)
+        self.text_current_frame = frames
 
-        if 'Carriage Return' in code and code == self.prev_code:
-            self.write_text(self._text_buffer[:self._text_cursor], frames)
-            self.clear_text()
-        else:
-            super().add_text(data, frames)
-    
-    def write_text(self, data, frames):
+    def write_text(self, frames):
         self.text_end_frame = frames
-        caption_text, has_writable = self.get_caption_text(data)
+        caption_text, has_writable = self.get_caption_text(self._text_buffer)
         if has_writable:
-            super().write_text(data, frames)
+            CaptionTrack.write_text(self, frames)
             self._write(
                 self.out_text,
                 self.text_start_frame,
@@ -1286,7 +1295,7 @@ class SRTCaptionTrack(TextCaptionTrack):
             self.text_count += 1
 
     def write_caption(self, data, frames):
-        super().write_caption(data, frames)
+        CaptionTrack.write_caption(self, data, frames)
 
         self.subtitle_end_frame = frames
         caption_text, _ = self.get_caption_text(data)
@@ -1301,7 +1310,7 @@ class SRTCaptionTrack(TextCaptionTrack):
 
     def _write(self, out_func, start_frame, end_frame, count, caption_text):
         out_func(count) # Required by: https://docs.fileformat.com/video/srt/
-        out_func('%s --> %s\n%s\n' % (self._get_timecode(start_frame), self._get_timecode(end_frame), caption_text))
+        out_func('%s --> %s\n%s\n' % (self._get_timecode(start_frame), self._get_timecode(end_frame), caption_text.rstrip('\n')))
         return True
 
     def _get_timecode(self, frames):
@@ -1319,12 +1328,12 @@ class HTMLCaptionTrack(TextCaptionTrack):
         # html colors, must be in hex format
         self.colors = {
             "White": "#FFFFFF",
-            "Green": "#00FF00",
-            "Blue": "#0000FF",
-            "Cyan": "#00FFFF",
-            "Red": "#FF0000",
-            "Yellow": "#FFFF00",
-            "Magenta": "#FF00FF",
+            "Green": "#20e000",
+            "Blue": "#00b7ff",
+            "Cyan": "#7fffff",
+            "Red": "#c02000",
+            "Yellow": "#ffd000",
+            "Magenta": "#a070e0",
             "Black": "#000000"
         }
         self.semi_transparent_alpha = "80" # appended to the end of the colors
@@ -1332,34 +1341,50 @@ class HTMLCaptionTrack(TextCaptionTrack):
             "Underline": "underline",
             "Italics": "italics"
         }
+        self.font_size_normal = "12px"
+        self.font_size_double = "24px"
+
         self.colors_regex = r"\b(" + "|".join(self.colors) + r")\b"
         self.styles_regex = r"\b(" + "|".join(self.styles) + r")\b"
 
-        self._background_color = "background-transparent"
-        self._text_color = "text-white"
-        self._text_style = ""
+        self.line_break_character = "<br>"
+        self._element_line_break = "<!--\n-->"
 
-    def get_html_start(self):
-        base_style = "body { font-family: monospace, monospace; background-color: black; line-height: 0.8; } pre { margin: 0; display: inline; }"
+        self._default_background_color = "background-black"
+        self._default_text_color = "text-white"
+        self._default_text_style = ""
+        self._default_font_style = "caption-font-normal"
+
+        self._background_color = self._default_background_color
+        self._text_color = self._default_text_color
+        self._text_style = self._default_text_style
+        self._font_style = self._default_font_style
+
+    def get_html_start(self, channel_type):
+        base_style = "body { font-family: monospace, monospace; background-color: black; } pre { margin: 0; display: inline; }"
         text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; }"
         background_colors = ".background-transparent { background-color: transparent; }" + " ".join([f".background-{color_key.lower()} {{ background-color: {color_value}; }}" for color_key, color_value in self.colors.items()])
         background_st_colors = " ".join([f".background-{color_key.lower()}-semi-transparent {{ background-color: {color_value}{self.semi_transparent_alpha}; }}" for color_key, color_value in self.colors.items()])
         text_colors = " ".join([f".text-{color_key.lower()} {{ color: {color_value}; }}" for color_key, color_value in self.colors.items()])
+        font_sizes = f".caption-font-normal {{ font-size: {self.font_size_normal}; }} .caption-font-double {{ font-size: {self.font_size_double}; }}"
 
-        style_tag = "<style>" + " ".join([base_style, text_styles, background_colors, background_st_colors, text_colors]) + " </style>"
+        style_tag = "<style>" + "\n".join([base_style, text_styles, background_colors, background_st_colors, text_colors, font_sizes]) + " </style>"
 
-        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>TEXT Channel {self._cc_track}</title>{style_tag}</head><body><pre class='{self._background_color} {self._text_color} {self._text_style}'>"
+        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>{self._cc_track} {channel_type}</title>{style_tag}</head><body>{self._element_line_break}<div id='captions' >{self.get_pre_tag()}"
     
     def get_html_end(self):
-        return "</pre></body></html>"
+        return f"</pre>{self._element_line_break}</div></body></html>"
+    
+    def get_pre_tag(self):
+        return f"{self._element_line_break}<pre class='{self._font_style} {self._background_color} {self._text_color} {self._text_style}'>"
 
     def open(self):
         super().open()
-        self.out(self.get_html_start())
+        self.out(self.get_html_start("Closed Captions"))
 
     def open_text(self):
         super().open_text()
-        self.out_text(self.get_html_start())
+        self.out_text(self.get_html_start("Text Mode"))
 
     def close(self):
         html_end = self.get_html_end()
@@ -1389,73 +1414,55 @@ class HTMLCaptionTrack(TextCaptionTrack):
         super().global_erase_displayed_memory(data, frames)
 
     def handle_style(self, code, caption_text):
-        styles_updated = False
-        background_color = self._background_color
-        text_color = self._text_color
-        text_style = self._text_style
+        caption_text = super().handle_style(code, caption_text)
 
-        # check for updated styles
-        style_match = re.findall(self.styles_regex, code)
-        if style_match:
-            text_style = " ".join([self.styles[s] for s in style_match])
-
+        color = None
         color_match = re.search(self.colors_regex, code)
         if color_match:
             color = color_match[0].lower()
-            if "Background" in code:
+
+        style_match = re.findall(self.styles_regex, code)
+
+        if "Background" in code:
+            # background color update
+            if color:
                 if "Semi-Transparent" in code:
-                    background_color = "background-semi-transparent-" + color
+                    self._background_color = "background-semi-transparent-" + color
                 else:
-                    background_color = "background-" + color
+                    self._background_color = "background-" + color
+            elif "Background Transparent" in code:
+                self._background_color = "background-transparent"
             else:
-                if not style_match:
-                    # color update without style assumes the style is cleared
-                    text_style = ""
+                self._background_color = self._default_background_color
+        else:
+            # check for text color / style updates
+            # mid-row style updates are additive
+            # preamble style updates are not and should reset any existing styles
+            is_pre = "Pre:" in code
 
-                text_color = "text-" + color
-        elif "Background Transparent" in code:
-            background_color = "background-transparent"           
+            if color_match:
+                self._text_color = "text-" + color
+            elif is_pre:
+                self._text_color = self._default_text_color
 
-        # update pre tag if any styles changed
-        if background_color != self._background_color:
-            styles_updated = True
-            self._background_color = background_color
+            if style_match:
+                self._text_style = " ".join([self.styles[s] for s in style_match])
+            elif is_pre:
+                self._text_style = self._default_text_style
 
-        if text_color != self._text_color:
-            styles_updated = True
-            self._text_color = text_color
-
-        if text_style != self._text_style:
-            styles_updated = True
-            self._text_style = text_style
-
-        if styles_updated:
-            return f"{caption_text}</pre><pre class='{self._background_color} {self._text_color} {self._text_style}'>"
-
-        return caption_text
+        return f"{caption_text}</pre>{self.get_pre_tag()}"
     
     def dedupe_bad_data_from_text(self, code):
         character = super().dedupe_bad_data_from_text(code)
         character = escape(character)
-        character = character.replace(" ", self.space_character)
         return character
 
-    def write_text(self, data, frames):
-        caption_text, has_writable = self.get_caption_text(data)
-        if has_writable:
-            CaptionTrack.write_text(self, data, frames)
-            self._write(self.out_text, caption_text)
-
     def write_caption(self, data, frames, add_line_break = False):
-        caption_text, has_writable = self.get_caption_text(data)
-        if has_writable:
-            if add_line_break:
-                caption_text += self.line_break_character
-            CaptionTrack.write_caption(self, data, frames)
-            self._write(self.out, caption_text)
-
-    def _write(self, out_func, caption_text):
-        out_func(caption_text.rstrip('\n'))
+        caption_text, _ = self.get_caption_text(data)
+        if add_line_break:
+            caption_text += self.line_break_character
+        CaptionTrack.write_caption(self, data, frames)
+        self.out(caption_text)
 
     def add_on_screen(self, data, frames):
         self._buffer_on_screen.append(data)
