@@ -202,7 +202,6 @@ class ClosedCaptionFileDecoder(object):
             ffmpeg_cmd = [
                 ffmpeg_path,
                 "-loglevel", "error",
-                "-hwaccel_device", "/dev/dri/renderD129",
                 *(["-hwaccel", ffmpeg_hw_accel] if ffmpeg_hw_accel else []),
                 "-i", input_file,
                 "-vf", f"format=gray8,{ffmpeg_pre_scale + ',' if ffmpeg_pre_scale else ''}scale={image_width}:-1:flags=neighbor{',interlace=lowpass=off' if deinterlaced else ''},crop=iw:{image_height}:0:0",
