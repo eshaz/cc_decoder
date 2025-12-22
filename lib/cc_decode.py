@@ -1156,11 +1156,10 @@ class TextCaptionTrack(CaptionTrack):
     def add_text(self, data, frames):
         _, code, control, _, _, _, _ = data
 
-        super().add_text(data, frames)
-
         if control:
             if code != self.prev_code:
                 # only handle control characters once
+                super().add_text(data, frames)
                 if 'Carriage Return' in code:
                     self.write_text(frames)
                     self.clear_text()
@@ -1174,6 +1173,8 @@ class TextCaptionTrack(CaptionTrack):
                         self._text_buffer = []
                         # re-add the indent code
                         super().add_text(data, frames)
+        else:
+            super().add_text(data, frames)
 
         self.previous_frames = frames
 
