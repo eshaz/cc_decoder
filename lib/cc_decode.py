@@ -1207,7 +1207,7 @@ class SRTCaptionTrack(TextCaptionTrack):
 
         self.output_end = "\n"
 
-        self.fps = 29.97
+        self.fps = options["frame_rate"]
 
     def close(self):
         if len(self._text_buffer) > 0:

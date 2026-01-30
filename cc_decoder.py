@@ -104,7 +104,7 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet):
+    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = ffmpeg_pre_scale
         self.ffmpeg_hw_accel = ffmpeg_hw_accel
@@ -121,13 +121,14 @@ class ClosedCaptionFileDecoder(object):
         self.workingdir = ''
         self.quiet = quiet
 
+        self.frame_rate = frame_rate
         self.image_width = 720
         self.image_height = self.end_line + 1
         self.caption_count = 0
         self.frame_count = 0
 
     @staticmethod
-    def print_status_worker(rx):
+    def print_status_worker(rx, frame_rate):
         setproctitle(multiprocessing.current_process().name)
 
         message = ""
@@ -139,7 +140,6 @@ class ClosedCaptionFileDecoder(object):
         prev_row_ts = time.perf_counter_ns()
         curr_row_ts = prev_row_ts
         prev_row_frame = 0
-        frames_per_second = 29.97
         decode_rate = 0
 
         while True:
@@ -155,7 +155,7 @@ class ClosedCaptionFileDecoder(object):
             curr_row_ts = time.perf_counter_ns()
             elapsed_seconds = (curr_row_ts - prev_row_ts) / 1e9
             if elapsed_seconds >= 1:
-                decode_rate = (frame - prev_row_frame) / frames_per_second / elapsed_seconds
+                decode_rate = (frame - prev_row_frame) / frame_rate / elapsed_seconds
                 prev_row_frame = frame
                 prev_row_ts = curr_row_ts
 
@@ -236,7 +236,9 @@ class ClosedCaptionFileDecoder(object):
         running_decoders = []
         running_decoders_conns = []
         formats = self.format.split(",")
-        options = {}
+        options = {
+            "frame_rate": self.frame_rate
+        }
 
         # start decoders
         for format in formats:
@@ -277,7 +279,7 @@ class ClosedCaptionFileDecoder(object):
                 status_rx, status_tx = multiprocessing.Pipe(False)
                 print_status_process = multiprocessing.Process(
                     None, ClosedCaptionFileDecoder.print_status_worker, name=f"cc_decoder_print_status",
-                    args=(status_rx,)
+                    args=(status_rx, self.frame_rate)
                 )
                 print_status_process.start()
 
@@ -340,7 +342,7 @@ def main():
     ffmpeg = shutil.which("ffmpeg")
     p.add_argument('videofile', help='Input video file name')
     output_options = p.add_argument_group('Output Options')
-    output_options.add_argument('-o', metavar='', required=True, help='Output subtitle filename without extension')
+    output_options.add_argument('-o', metavar='OUTPUT_SUBTITLE_NAME', required=True, help='Output subtitle filename without extension')
 
     p.add_argument('-q', default=False, action='store_true', help='Suppress status output')
 
@@ -366,6 +368,13 @@ def main():
     decoding_options = p.add_argument_group('Decoding Options')
     decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start at `start_line` when searching through the video 0=topmost line (default 0)')
     decoding_options.add_argument('--end_line', metavar='', default=10, type=int, help='End at `end_line` when searching through the video (default 10)')
+    decoding_options.add_argument('--frame_rate', metavar='', type=float, default='29.97',
+                            help=(
+                                'Specifies the frame rate of the input video \n'
+                                '  29.97 (NTSC) [default]\n'
+                                '  25    (PAL)'
+                            )
+    )
 
     args = p.parse_args()
 
@@ -377,7 +386,8 @@ def main():
                                            ccformat=args.ccformat,
                                            start_line=args.start_line,
                                            end_line=args.end_line,
-                                           quiet=args.q)
+                                           quiet=args.q,
+                                           frame_rate=args.frame_rate)
         exit(decoder.decode(args.videofile, args.o))
 
 if __name__ == '__main__':
