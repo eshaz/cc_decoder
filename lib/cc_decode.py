@@ -557,7 +557,7 @@ def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_media
 
     return 1 if mean > normalized_median else 0, std
 
-def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score):
+def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot):
     # fraction of data to remove at edges of each detected bit
     bit_width_padding = 0.1
     min_std_dev_for_correction = 0.3
@@ -629,55 +629,109 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
         byte_parity[i] = b_parity_bit == b_parity_calculated
 
     # uncomment to debug
-    #if b_error_count >= 1 or not (byte_parity[0] or byte_parity[1]):
-    #    bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] for i in range(START_BIT_COUNT + DATA_BIT_COUNT)]
-    #    print("bit width", bit_width, "score", best_score, "errors", b_error_count)
-    #    debug_plot(normalized_line, round(preamble_start), round(preamble_end), round(bit_width), bits, bit_width_padding)
+    if debug_plot:
+        bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] for i in range(START_BIT_COUNT + DATA_BIT_COUNT)]
+        show_debug_plot(
+            normalized_line,
+            round(preamble_start),
+            round(preamble_end),
+            round(bit_width),
+            bits,
+            bit_width,
+            bit_width_padding,
+            byte_data,
+            byte_parity
+        )
 
     return byte_data[0], byte_parity[0], byte_data[1], byte_parity[1]
 
-def debug_plot(line, preamble_start, preamble_end, width, bits, bit_width_padding):
+def show_debug_plot(line, preamble_start, preamble_end, width, bits, bit_width, bit_width_padding, byte_data, byte_parity):
+    import numpy as np
+    import matplotlib.pyplot as plt
+
     line = np.asarray(line, dtype=float)
     n = len(line)
-    
-    # Compute mid, amplitude for sine wave
+
+    # Compute mid and amplitude from preamble region
     mid = np.mean(line[preamble_start:preamble_end])
     high = np.max(line[preamble_start:preamble_end])
     low = np.min(line[preamble_start:preamble_end])
     amplitude = (high - low) / 2
-    
-    # Full sine wave for the line
+
+    # Generate full sine reference
     t = np.arange(n)
     phase_offset = 2 * np.pi * preamble_start / width
     sine_full = mid + amplitude * np.sin(2 * np.pi * t / width - phase_offset)
-    
-    # Plot the waveform
-    plt.figure(figsize=(12, 4))
-    plt.plot(line, label='Line waveform', color="black")
-    plt.plot(sine_full, label='Sine wave', color='red', alpha=0.7)
-    
-    # Clock run-in start and end
-    plt.axvline(preamble_start, color='green', linestyle='--', label='Clock start')
-    plt.axvline(preamble_end, color='purple', linestyle='--', label='Clock end')
-    
-    # Overlay bit markers
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    # Plot waveform and sine
+    ax.plot(line, label='Line Waveform', color="black")
+    ax.plot(sine_full, label='Clock', color='red', alpha=0.7)
+
+    # Clock run-in markers
+    ax.axvline(preamble_start, color='green', linestyle='--', label='Preamble start')
+    ax.axvline(preamble_end, color='purple', linestyle='--', label='Preamble end')
+
+    # ---- Bit highlighting ----
     bit_count = len(bits)
     bit_padding = bit_width_padding * width
     starts = preamble_end + np.arange(bit_count) * width + bit_padding
     ends = starts + width - 2 * bit_padding
-    
-    for i, (s, e, b) in enumerate(zip(starts, ends, bits)):
+
+    for s, e, b in zip(starts, ends, bits):
         color = 'blue' if b == 1 else 'orange'
-        plt.axvspan(s, e, color=color, alpha=0.3)
-        plt.text((s+e)/2, mid + amplitude*1.1, str(b), color='black', ha='center', va='bottom')
-    
-    plt.xlabel('Pixel position')
-    plt.ylabel('Amplitude')
-    plt.title('Line waveform with sine wave and decoded bits')
-    plt.legend()
+        ax.axvspan(s, e, color=color, alpha=0.3)
+        ax.text((s + e) / 2,
+                mid + amplitude * 1.1,
+                str(b),
+                color='black',
+                ha='center',
+                va='bottom')
+
+    # Labels and legend
+    ax.set_xlabel('Position (Width)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Bit Decoding Debug Plot')
+    ax.legend()
+
+    # ---- Byte information box BELOW plot, left-aligned to axes ----
+    info_lines = []
+
+    for i, (byte_val, parity_ok) in enumerate(zip(byte_data, byte_parity)):
+        byte_num = i + 1
+        hex_text = f"0x{byte_val:02X}"
+        parity_text = "GOOD" if parity_ok else "BAD"
+        info_lines.append(f"Byte {byte_num}: {hex_text} Parity: {parity_text}")
+
+    control = (byte_data[0], byte_data[1]) in ALL_CC_CONTROL_CODES
+    info_text = f'Bit Width: {round(bit_width, 3)} | {" | ".join(info_lines)} | Code: "{decode_byte_pair(control, byte_data[0], byte_data[1])}"'
+
+    # Make room at bottom
+    plt.subplots_adjust(bottom=0.2)
+
+    # Get axes position in figure coordinates
+    pos = ax.get_position()
+
+    # Place box aligned to left edge of inner axes
+    fig.text(
+        pos.x0,           # left edge of axes
+        0.05,             # vertical position below plot
+        info_text,
+        ha='left',
+        va='center',
+        fontsize=11,
+        bbox=dict(
+            boxstyle="round",
+            facecolor="white",
+            edgecolor="black",
+            alpha=0.95
+        )
+    )
+
     plt.show()
 
-def find_and_decode_rows(img, start_line, search_lines):
+def find_and_decode_rows(img, start_line, search_lines, debug_plot):
     rows_found = []
     field_0_idx = None
 
@@ -695,6 +749,7 @@ def find_and_decode_rows(img, start_line, search_lines):
                 preamble_match["preamble_end"],
                 preamble_match["bit_width"],
                 preamble_match["score"],
+                debug_plot,
             )
 
             rows_found.append((start_idx, b1, b1_parity, b2, b2_parity))
@@ -703,11 +758,11 @@ def find_and_decode_rows(img, start_line, search_lines):
 
     return rows_found
 
-def extract_closed_caption_bytes(img, start_line, search_lines):
+def extract_closed_caption_bytes(img, start_line, search_lines, debug_plot):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
     # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
     decoded_rows = []
-    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines):
+    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines, debug_plot):
         control = (b1, b2) in ALL_CC_CONTROL_CODES
     
         # handle parity errors
@@ -1128,7 +1183,8 @@ class TextCaptionTrack(CaptionTrack):
     def handle_style(self, code, caption_text):
         if "Mid-row" in code:
             # mid row style updates add a space
-            caption_text += " "
+            caption_text += self.space_character
+
         return caption_text
 
     def get_caption_text(self, data):
@@ -1140,12 +1196,14 @@ class TextCaptionTrack(CaptionTrack):
             if control:
                 # repeated control codes should be filtered out at this point
                 if byte1_parity and byte2_parity:
+                    # update style first to avoid using old style while adding spaces
+                    caption_text = self.handle_style(code, caption_text)
+                    # handle spacing updates
                     caption_text, current_row = self.handle_row(code, caption_text, current_row)
                     caption_text = self.handle_cr(code, caption_text)
                     caption_text = self.handle_bs(code, caption_text)
                     caption_text = self.handle_tab(code, caption_text)
                     caption_text = self.handle_indent(code, caption_text)
-                    caption_text = self.handle_style(code, caption_text)
             else:
                 # get only a printable code (no byte values)
                 caption_text, has_writable = self.handle_character(caption_text, has_writable, byte1, byte2)
@@ -1372,9 +1430,15 @@ class HTMLCaptionTrack(TextCaptionTrack):
     
     def get_html_end(self):
         return f"</pre>{self._element_line_break}</div></body></html>"
+
+    def _get_pre_tag(self, styles):
+        return f"{self._element_line_break}<pre class='{" ".join([s for s in styles if s.strip()])}'>"
     
     def get_pre_tag(self):
-        return f"{self._element_line_break}<pre class='{self._font_style} {self._background_color} {self._text_color} {self._text_style}'>"
+        return self._get_pre_tag([self._font_style, self._background_color, self._text_color, self._text_style])
+    
+    def get_pre_tag_background_only(self):
+        return self._get_pre_tag([self._font_style, self._background_color])
 
     def open(self):
         super().open()
@@ -1412,8 +1476,6 @@ class HTMLCaptionTrack(TextCaptionTrack):
         super().global_erase_displayed_memory(data, frames)
 
     def handle_style(self, code, caption_text):
-        caption_text = super().handle_style(code, caption_text)
-
         color = None
         color_match = re.search(self.colors_regex, code)
         if color_match:
@@ -1434,24 +1496,34 @@ class HTMLCaptionTrack(TextCaptionTrack):
                 self._background_color = self._default_background_color
         else:
             # check for text color / style updates
-            # mid-row style updates are additive
-            # preamble style updates are not and should reset any existing styles
             is_pre = "Pre:" in code
+            is_mid = "Mid-row" in code
+
+            # mid-row updates for style, (i.e. underline, italics, flashing) without a color specified DO NOT clear the color
+            # mid-row updates for color without a style specified DO clear the style
+            # pre updates always clear style or color if unset
+            clear_other_style = is_pre or (is_mid and color_match)
 
             if color_match:
                 self._text_color = "text-" + color
-            elif is_pre:
+            elif clear_other_style:
                 self._text_color = self._default_text_color
 
             if style_match:
                 self._text_style = " ".join([self.styles[s] for s in style_match])
-            elif is_pre:
+            elif clear_other_style:
                 self._text_style = self._default_text_style
 
             if "Flash" in code:
                 self._text_style += " flashing"
 
-        return f"{caption_text}</pre>{self.get_pre_tag()}"
+        caption_text = f"{caption_text}</pre>{self.get_pre_tag()}"
+
+        if "Mid-row" in code:
+            # mid row style updates add a space without text color or text style
+            caption_text = f"{caption_text}</pre>{self.get_pre_tag_background_only()}{self.space_character}</pre>{self.get_pre_tag()}"
+
+        return caption_text
     
     def dedupe_bad_data_from_text(self, code):
         character = super().dedupe_bad_data_from_text(code)

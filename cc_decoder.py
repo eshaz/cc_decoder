@@ -104,7 +104,7 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate):
+    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, debug_plot):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = ffmpeg_pre_scale
         self.ffmpeg_hw_accel = ffmpeg_hw_accel
@@ -120,6 +120,7 @@ class ClosedCaptionFileDecoder(object):
 
         self.workingdir = ''
         self.quiet = quiet
+        self.debug_plot = debug_plot
 
         self.frame_rate = frame_rate
         self.image_width = 720
@@ -189,7 +190,8 @@ class ClosedCaptionFileDecoder(object):
             ffmpeg_hw_accel,
             deinterlaced,
             start_line,
-            end_line
+            end_line,
+            debug_plot
     ):
         setproctitle(multiprocessing.current_process().name)
         try:
@@ -226,7 +228,7 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, start_line, search_lines))
+                tx.send(extract_closed_caption_bytes(image, start_line, search_lines, debug_plot))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -271,6 +273,7 @@ class ClosedCaptionFileDecoder(object):
                     self.deinterlaced,
                     self.start_line,
                     self.end_line + 1,
+                    self.debug_plot,
                 )
             )
             image_decoder_process.start()
@@ -345,6 +348,7 @@ def main():
     output_options.add_argument('-o', metavar='OUTPUT_SUBTITLE_NAME', required=True, help='Output subtitle filename without extension')
 
     p.add_argument('-q', default=False, action='store_true', help='Suppress status output')
+    p.add_argument('--debug_plot', default=False, action='store_true', help='Show a debug plot for each line that is detected')
 
     input_video_options = p.add_argument_group('Input Options')
     input_video_options.add_argument('--deinterlaced', default=False, action='store_true', help='Specify if the input video is progressive (i.e. de-interlaced)')
@@ -387,7 +391,8 @@ def main():
                                            start_line=args.start_line,
                                            end_line=args.end_line,
                                            quiet=args.q,
-                                           frame_rate=args.frame_rate)
+                                           frame_rate=args.frame_rate,
+                                           debug_plot=args.debug_plot)
         exit(decoder.decode(args.videofile, args.o))
 
 if __name__ == '__main__':
