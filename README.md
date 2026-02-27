@@ -43,9 +43,7 @@ Examples
 Options
 =======
 ```
-usage: cc_decoder.py [-h] -o OUTPUT_SUBTITLE_NAME [-q] [--debug_plot] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--end_line]
-                     [--frame_rate]
-                     videofile
+usage: cc_decoder.py [-h] -o OUTPUT_SUBTITLE_NAME [-q] [--debug_plot] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--end_line] [--min_correlation] [--frame_rate] videofile
 
 Extracts CEA-608-E Closed Captions (line 21) data from a video file
 
@@ -78,6 +76,10 @@ Input Options:
 Decoding Options:
   --start_line          Start at `start_line` when searching through the video 0=topmost line (default 0)
   --end_line            End at `end_line` when searching through the video (default 10)
+  --min_correlation     Sets the minimum correlation needed to flag a closed caption clock run in signal as valid. Decrease for better chances of detecting captions if there are issues with the preamble signal. Increase to remove false positives. Visually check for the presence of captions before changing this value.
+                          0.1  (minimum sane value)
+                          0.5  [default]
+                          0.9  (maximum sane value)
   --frame_rate          Specifies the frame rate of the input video 
                           29.97 (NTSC) [default]
                           25    (PAL)

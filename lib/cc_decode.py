@@ -57,10 +57,12 @@ import matplotlib.pyplot as plt
 from setproctitle import setproctitle
 from multiprocessing import current_process
 
-CLOCK_RUN_IN_COUNT = 7
-START_BIT_COUNT = 3
+CLOCK_RUN_IN_COUNT = 6.5
+START_BIT_ZEROS_COUNT = 2
+START_BIT_ONES_COUNT = 1
+START_BIT_COUNT = START_BIT_ZEROS_COUNT + START_BIT_ONES_COUNT
 DATA_BIT_COUNT = 16
-PRE_COMPUTED_SINE_TEMPLATES = []
+PRE_COMPUTED_PREAMBLE_TEMPLATES = []
 
 CC_TABLE = {
     0x00: '',  # Special - included here to clear a few things up
@@ -468,9 +470,12 @@ def precompute_sine_templates(image_width):
         if max_width >= image_width:
             # any match will be too long to fit in a line
             break
-    
-        t = np.arange(run_len)
-        template = np.sin(2 * np.pi * t / pixels_per_cycle)
+
+        template = np.concatenate((
+            np.sin(2 * np.pi * np.arange(run_len) / pixels_per_cycle), #   clock run in
+            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), 0), # 0,0
+            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #   1
+        ))
         template -= template.mean()
         template_rev = template[::-1]
         var_t = np.sum(template ** 2)
@@ -487,6 +492,7 @@ def precompute_sine_templates(image_width):
     return np.asarray(templates, dtype=tuple)
 
 def sync_to_preamble(img, row):
+    # synchronize to the clock run in sine wave as well as the three start bits
     # Read and normalize line
     line = img[row]
 
@@ -504,15 +510,25 @@ def sync_to_preamble(img, row):
 
     best_score = -np.inf
     preamble_start = None
+    preamble_run_in_len = None
     bit_width = None
     best_sine_template = None
 
-    for (pixels_per_cycle, max_width, run_len, sine_template, sine_template_rev, var_t) in PRE_COMPUTED_SINE_TEMPLATES:
+    for (
+        pixels_per_cycle,
+        max_width,
+        run_in_len,
+        preamble_template,
+        preamble_template_rev,
+        var_t
+    ) in PRE_COMPUTED_PREAMBLE_TEMPLATES:
         # normalized correlation
-        conv = np.convolve(norm, sine_template_rev, mode='valid')
-        sum_x = cumsum[run_len-1:] - np.concatenate(([0], cumsum[:-run_len]))
-        sum_x2 = cumsum2[run_len-1:] - np.concatenate(([0], cumsum2[:-run_len]))
-        var_x = sum_x2 - sum_x ** 2 / run_len
+        preamble_template_len = len(preamble_template)
+
+        conv = np.convolve(norm, preamble_template_rev, mode='valid')
+        sum_x = cumsum[preamble_template_len-1:] - np.concatenate(([0], cumsum[:-preamble_template_len]))
+        sum_x2 = cumsum2[preamble_template_len-1:] - np.concatenate(([0], cumsum2[:-preamble_template_len]))
+        var_x = sum_x2 - sum_x ** 2 / preamble_template_len
         score = (conv ** 2) / (var_t * var_x + 1e-12)
 
         idx = np.argmax(score)
@@ -523,20 +539,14 @@ def sync_to_preamble(img, row):
         if score[idx] > best_score:
             best_score = score[idx]
             preamble_start = idx
+            preamble_run_in_len = run_in_len
             bit_width = pixels_per_cycle
-            best_sine_template = sine_template
+            best_sine_template = preamble_template
 
     if best_sine_template is None:
         return None
 
-    # ---- PHASE CORRECTION ----
-    run_len = round(CLOCK_RUN_IN_COUNT * bit_width)
-    seg = norm[round(preamble_start):round(preamble_start) + run_len]
-    if np.dot(seg - seg.mean(), best_sine_template) < 0:
-        # flip phase
-        preamble_start += bit_width / 2
-
-    preamble_end = preamble_start + (CLOCK_RUN_IN_COUNT - 0.5) * bit_width
+    preamble_end = preamble_start + preamble_run_in_len
 
     return {
         "normalized_line": norm,
@@ -636,6 +646,7 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
             round(preamble_start),
             round(preamble_end),
             round(bit_width),
+            best_score,
             bits,
             bit_width,
             bit_width_padding,
@@ -645,7 +656,7 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
 
     return byte_data[0], byte_parity[0], byte_data[1], byte_parity[1]
 
-def show_debug_plot(line, preamble_start, preamble_end, width, bits, bit_width, bit_width_padding, byte_data, byte_parity):
+def show_debug_plot(line, preamble_start, preamble_end, width, best_score, bits, bit_width, bit_width_padding, byte_data, byte_parity):
     import numpy as np
     import matplotlib.pyplot as plt
 
@@ -705,7 +716,7 @@ def show_debug_plot(line, preamble_start, preamble_end, width, bits, bit_width, 
         info_lines.append(f"Byte {byte_num}: {hex_text} Parity: {parity_text}")
 
     control = (byte_data[0], byte_data[1]) in ALL_CC_CONTROL_CODES
-    info_text = f'Bit Width: {round(bit_width, 3)} | {" | ".join(info_lines)} | Code: "{decode_byte_pair(control, byte_data[0], byte_data[1])}"'
+    info_text = f'Score: {round(best_score, 3)} | Bit Width: {round(bit_width, 3)} | {" | ".join(info_lines)} | Code: "{decode_byte_pair(control, byte_data[0], byte_data[1])}"'
 
     # Make room at bottom
     plt.subplots_adjust(bottom=0.2)
@@ -731,7 +742,7 @@ def show_debug_plot(line, preamble_start, preamble_end, width, bits, bit_width, 
 
     plt.show()
 
-def find_and_decode_rows(img, start_line, search_lines, debug_plot):
+def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_plot):
     rows_found = []
     field_0_idx = None
 
@@ -742,7 +753,7 @@ def find_and_decode_rows(img, start_line, search_lines, debug_plot):
         start_idx = row_idx + start_line
         preamble_match = sync_to_preamble(img, start_idx)
 
-        if preamble_match is not None and preamble_match["score"] > 0.7:
+        if preamble_match is not None and preamble_match["score"] > min_correlation:
             b1, b1_parity, b2, b2_parity = decode_bytes(
                 preamble_match["normalized_line"],
                 preamble_match["preamble_start"],
@@ -758,11 +769,11 @@ def find_and_decode_rows(img, start_line, search_lines, debug_plot):
 
     return rows_found
 
-def extract_closed_caption_bytes(img, start_line, search_lines, debug_plot):
+def extract_closed_caption_bytes(img, start_line, search_lines, min_correlation, debug_plot):
     """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
     # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
     decoded_rows = []
-    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines, debug_plot):
+    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_plot):
         control = (b1, b2) in ALL_CC_CONTROL_CODES
     
         # handle parity errors

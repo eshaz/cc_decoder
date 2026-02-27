@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # coding=utf-8
 """
 ccDecoder is a Python Closed Caption Decoder/Extractor
@@ -104,7 +104,7 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, debug_plot):
+    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, debug_plot):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = ffmpeg_pre_scale
         self.ffmpeg_hw_accel = ffmpeg_hw_accel
@@ -120,6 +120,7 @@ class ClosedCaptionFileDecoder(object):
 
         self.workingdir = ''
         self.quiet = quiet
+        self.min_correlation = min_correlation
         self.debug_plot = debug_plot
 
         self.frame_rate = frame_rate
@@ -191,6 +192,7 @@ class ClosedCaptionFileDecoder(object):
             deinterlaced,
             start_line,
             end_line,
+            min_correlation,
             debug_plot
     ):
         setproctitle(multiprocessing.current_process().name)
@@ -219,7 +221,7 @@ class ClosedCaptionFileDecoder(object):
                 bufsize=image_size
             )
 
-            lib.cc_decode.PRE_COMPUTED_SINE_TEMPLATES = lib.cc_decode.precompute_sine_templates(image_width)
+            lib.cc_decode.PRE_COMPUTED_PREAMBLE_TEMPLATES = lib.cc_decode.precompute_sine_templates(image_width)
 
             while True:
                 image_buffer = fpid.stdout.read(image_size)
@@ -228,7 +230,7 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, start_line, search_lines, debug_plot))
+                tx.send(extract_closed_caption_bytes(image, start_line, search_lines, min_correlation, debug_plot))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -273,6 +275,7 @@ class ClosedCaptionFileDecoder(object):
                     self.deinterlaced,
                     self.start_line,
                     self.end_line + 1,
+                    self.min_correlation,
                     self.debug_plot,
                 )
             )
@@ -372,6 +375,14 @@ def main():
     decoding_options = p.add_argument_group('Decoding Options')
     decoding_options.add_argument('--start_line', metavar='', default=0, type=int, help='Start at `start_line` when searching through the video 0=topmost line (default 0)')
     decoding_options.add_argument('--end_line', metavar='', default=10, type=int, help='End at `end_line` when searching through the video (default 10)')
+    decoding_options.add_argument('--min_correlation', metavar='', default=0.5, type=float, 
+                                  help=(
+                                      'Sets the minimum correlation needed to flag a closed caption clock run in signal as valid. Decrease for better chances of detecting captions if there are issues with the preamble signal. Increase to remove false positives. Visually check for the presence of captions before changing this value.\n' \
+                                      '  0.1  (minimum sane value)\n'
+                                      '  0.5  [default]\n'
+                                      '  0.9  (maximum sane value)'
+                                  )
+    )
     decoding_options.add_argument('--frame_rate', metavar='', type=float, default='29.97',
                             help=(
                                 'Specifies the frame rate of the input video \n'
@@ -392,6 +403,7 @@ def main():
                                            end_line=args.end_line,
                                            quiet=args.q,
                                            frame_rate=args.frame_rate,
+                                           min_correlation = args.min_correlation,
                                            debug_plot=args.debug_plot)
         exit(decoder.decode(args.videofile, args.o))
 
