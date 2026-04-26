@@ -43,7 +43,7 @@ Examples
 Options
 =======
 ```
-usage: cc_decoder.py [-h] -o OUTPUT_SUBTITLE_NAME [-q] [--debug_plot] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--end_line] [--min_correlation] [--frame_rate] videofile
+usage: cc_decoder.py [-h] -o OUTPUT_SUBTITLE_NAME [-q] [--debug_plot] [--deinterlaced] [--ffmpeg ] [--ffmpeg_pre_scale ] [--ffmpeg_hw_accel ] [--ccformat ] [--start_line ] [--end_line ] [--min_correlation ] [--preamble_run_in_count ] [--frame_rate ] videofile
 
 Extracts CEA-608-E Closed Captions (line 21) data from a video file
 
@@ -80,6 +80,9 @@ Decoding Options:
                           0.1  (minimum sane value)
                           0.5  [default]
                           0.9  (maximum sane value)
+  --preamble_run_in_count 
+                        Sets the number of pulses to expected in the clock run in signal. Sometimes broadcasters / editors will blank part of the run in signal to disable captions, without blanking the whole line. To decode these captions, set this value to the number of run in pulses that are visible in the closed caption line.
+                          6.5  [default]
   --frame_rate          Specifies the frame rate of the input video 
                           29.97 (NTSC) [default]
                           25    (PAL)
