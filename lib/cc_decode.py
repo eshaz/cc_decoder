@@ -57,7 +57,7 @@ import matplotlib.pyplot as plt
 from setproctitle import setproctitle
 from multiprocessing import current_process
 
-CLOCK_RUN_IN_COUNT = 6.5
+PREAMBLE_RUN_IN_COUNT = 6.5
 START_BIT_ZEROS_COUNT = 2
 START_BIT_ONES_COUNT = 1
 START_BIT_COUNT = START_BIT_ZEROS_COUNT + START_BIT_ONES_COUNT
@@ -451,7 +451,7 @@ def decode_byte_pair(control, byte1, byte2, default_unicode=True):
     return '' + CC_TABLE.get(byte1, '?b1(%02x)' % (byte1) if default_unicode else "") + \
            CC_TABLE.get(byte2, '?b2(%02x)' % (byte2) if default_unicode else "")
 
-def precompute_sine_templates(image_width):
+def precompute_sine_templates(image_width, preamble_run_in_count):
     # granularity of period width
     min_clock_len = round(0.035 * image_width) # lower boundary for period width
     max_clock_len = round(0.041 * image_width) # upper boundary for period width
@@ -464,8 +464,8 @@ def precompute_sine_templates(image_width):
     # precompute the preamble clock run-in search parameters
     for i in range(len(search_widths)):
         pixels_per_cycle = search_widths[i]
-        run_len = round(CLOCK_RUN_IN_COUNT * pixels_per_cycle)
-        max_width = round((CLOCK_RUN_IN_COUNT + START_BIT_COUNT + DATA_BIT_COUNT) * pixels_per_cycle)
+        run_len = round(preamble_run_in_count * pixels_per_cycle)
+        max_width = round((preamble_run_in_count + START_BIT_COUNT + DATA_BIT_COUNT) * pixels_per_cycle)
 
         if max_width >= image_width:
             # any match will be too long to fit in a line

@@ -89,7 +89,8 @@ from lib.cc_decode import (
     decode_to_html,
     decode_captions_debug,
     extract_closed_caption_bytes,
-    decode_xds_packets
+    decode_xds_packets,
+    PREAMBLE_RUN_IN_COUNT
 )
 
 import numpy as np
@@ -104,7 +105,7 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets}
 
-    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, debug_plot):
+    def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, preamble_run_in_count, debug_plot):
         self.ffmpeg_path = ffmpeg_path
         self.ffmpeg_pre_scale = ffmpeg_pre_scale
         self.ffmpeg_hw_accel = ffmpeg_hw_accel
@@ -121,6 +122,7 @@ class ClosedCaptionFileDecoder(object):
         self.workingdir = ''
         self.quiet = quiet
         self.min_correlation = min_correlation
+        self.preamble_run_in_count = preamble_run_in_count
         self.debug_plot = debug_plot
 
         self.frame_rate = frame_rate
@@ -193,6 +195,7 @@ class ClosedCaptionFileDecoder(object):
             start_line,
             end_line,
             min_correlation,
+            preamble_run_in_count,
             debug_plot
     ):
         setproctitle(multiprocessing.current_process().name)
@@ -221,7 +224,7 @@ class ClosedCaptionFileDecoder(object):
                 bufsize=image_size
             )
 
-            lib.cc_decode.PRE_COMPUTED_PREAMBLE_TEMPLATES = lib.cc_decode.precompute_sine_templates(image_width)
+            lib.cc_decode.PRE_COMPUTED_PREAMBLE_TEMPLATES = lib.cc_decode.precompute_sine_templates(image_width, preamble_run_in_count)
 
             while True:
                 image_buffer = fpid.stdout.read(image_size)
@@ -276,6 +279,7 @@ class ClosedCaptionFileDecoder(object):
                     self.start_line,
                     self.end_line + 1,
                     self.min_correlation,
+                    self.preamble_run_in_count,
                     self.debug_plot,
                 )
             )
@@ -383,6 +387,12 @@ def main():
                                       '  0.9  (maximum sane value)'
                                   )
     )
+    decoding_options.add_argument('--preamble_run_in_count', metavar='', default=PREAMBLE_RUN_IN_COUNT, type=float, 
+                                  help=(
+                                      'Sets the number of pulses to expected in the clock run in signal. Sometimes broadcasters / editors will blank part of the run in signal to disable captions, without blanking the whole line. To decode these captions, set this value to the number of run in pulses that are visible in the closed caption line.\n' \
+                                      f'  {PREAMBLE_RUN_IN_COUNT}  [default]\n'
+                                  )
+    )
     decoding_options.add_argument('--frame_rate', metavar='', type=float, default='29.97',
                             help=(
                                 'Specifies the frame rate of the input video \n'
@@ -404,6 +414,7 @@ def main():
                                            quiet=args.q,
                                            frame_rate=args.frame_rate,
                                            min_correlation = args.min_correlation,
+                                           preamble_run_in_count = args.preamble_run_in_count,
                                            debug_plot=args.debug_plot)
         exit(decoder.decode(args.videofile, args.o))
 
