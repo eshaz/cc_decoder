@@ -171,7 +171,7 @@ class ClosedCaptionFileDecoder(object):
                     # pad message to consistent width
                     message = message + " " * (max_first_row_len - first_row_len)
     
-                message = message + f" | Line: {row_num} | Control: {'True ' if control else 'False'} | Byte1: {b1:#04x} | Byte2: {b2:#04x} {'| ' + code if code != "" else ""}"
+                message = message + f" | Line: {row_num} | Control: {'True ' if control else 'False'} | Byte1: {b1:#04x} | Byte2: {b2:#04x} {'| ' + code if code != '' else ''}"
 
                 if i == 0:
                     first_row_len = len(message)

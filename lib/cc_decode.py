@@ -1443,7 +1443,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
         return f"</pre>{self._element_line_break}</div></body></html>"
 
     def _get_pre_tag(self, styles):
-        return f"{self._element_line_break}<pre class='{" ".join([s for s in styles if s.strip()])}'>"
+        return f"{self._element_line_break}<pre class='{' '.join([s for s in styles if s.strip()])}'>"
     
     def get_pre_tag(self):
         return self._get_pre_tag([self._font_style, self._background_color, self._text_color, self._text_style])
