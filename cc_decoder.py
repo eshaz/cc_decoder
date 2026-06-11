@@ -416,7 +416,7 @@ def main():
                                            min_correlation = args.min_correlation,
                                            preamble_run_in_count = args.preamble_run_in_count,
                                            debug_plot=args.debug_plot)
-        exit(decoder.decode(args.videofile, args.o))
+        sys.exit(decoder.decode(args.videofile, args.o))
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
