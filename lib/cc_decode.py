@@ -484,19 +484,27 @@ def precompute_sine_templates(image_width, preamble_run_in_count):
             np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #   1
         ))
         template -= template.mean()
-        template_rev = template[::-1]
         var_t = np.sum(template ** 2)
-        
+
+        # scratch for the windowed sums, sized once here rather than allocated per
+        # line: every call writes them before reading, and a decoder process only ever
+        # runs one line at a time
+        scratch_len = image_width - len(template) + 1
+
         templates.append((
             pixels_per_cycle,
             max_width,
             run_len,
             template,
-            template_rev,
-            var_t
+            len(template),
+            var_t,
+            np.empty(scratch_len),
+            np.empty(scratch_len)
         ))
 
-    return np.asarray(templates, dtype=tuple)
+    # a plain tuple, not an object array: this is iterated sixteen times per line and
+    # unpacking an ndarray of tuples costs more than the correlation it feeds
+    return tuple(templates)
 
 def sync_to_preamble(img, row):
     # synchronize to the clock run in sine wave as well as the three start bits
@@ -511,9 +519,14 @@ def sync_to_preamble(img, row):
     norm_len = len(norm)
 
     # ---- CLOCK RUN-IN MATCH ----
-    # Precompute cumulative sums for fast variance computation
-    cumsum = np.cumsum(norm)
-    cumsum2 = np.cumsum(norm ** 2)
+    # Cumulative sums for fast windowed variance, padded with a leading zero so a
+    # window is one subtraction of two slices - the unpadded form needed a fresh
+    # concatenate per template per line, which is 600,000 allocations over a capture.
+    cumsum = np.empty(norm_len + 1)
+    cumsum2 = np.empty(norm_len + 1)
+    cumsum[0] = cumsum2[0] = 0.0
+    np.cumsum(norm, out=cumsum[1:])
+    np.cumsum(norm * norm, out=cumsum2[1:])
 
     best_score = -np.inf
     preamble_start = None
@@ -526,19 +539,29 @@ def sync_to_preamble(img, row):
         max_width,
         run_in_len,
         preamble_template,
-        preamble_template_rev,
-        var_t
+        preamble_template_len,
+        var_t,
+        sum_x,
+        var_x
     ) in PRE_COMPUTED_PREAMBLE_TEMPLATES:
-        # normalized correlation
-        preamble_template_len = len(preamble_template)
+        # normalized correlation; correlating with the template is the same operation
+        # as convolving with it reversed, without building the reversed copy. The
+        # scoring below is the same arithmetic written in place - at nine array
+        # operations a template it was allocating more than the correlation did.
+        conv = np.correlate(norm, preamble_template, mode='valid')
 
-        conv = np.convolve(norm, preamble_template_rev, mode='valid')
-        sum_x = cumsum[preamble_template_len-1:] - np.concatenate(([0], cumsum[:-preamble_template_len]))
-        sum_x2 = cumsum2[preamble_template_len-1:] - np.concatenate(([0], cumsum2[:-preamble_template_len]))
-        var_x = sum_x2 - sum_x ** 2 / preamble_template_len
-        score = (conv ** 2) / (var_t * var_x + 1e-12)
+        np.subtract(cumsum[preamble_template_len:], cumsum[:-preamble_template_len], out=sum_x)
+        np.subtract(cumsum2[preamble_template_len:], cumsum2[:-preamble_template_len], out=var_x)
+        np.multiply(sum_x, sum_x, out=sum_x)
+        sum_x /= preamble_template_len
+        np.subtract(var_x, sum_x, out=var_x)
+        var_x *= var_t
+        var_x += 1e-12
 
-        idx = np.argmax(score)
+        score = np.multiply(conv, conv, out=conv)
+        score /= var_x
+
+        idx = score.argmax()
         if idx + max_width >= norm_len:
             # best match would be too long to fit in a line
             continue
@@ -563,14 +586,28 @@ def sync_to_preamble(img, row):
         "score": best_score,
     }
 
-def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
+def bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end):
+    """ The samples this bit was sliced from """
     start = preamble_end + bit_index * bit_width
     s = round(start) + bit_padding
     e = round(start + bit_width) - bit_padding
 
-    seg = normalized_line[s:e]
-    mean = seg.mean()
-    std = math.sqrt((abs(seg - mean) ** 2).mean())
+    return normalized_line[s:e]
+
+def get_bit_value(bit_index, bit_width, bit_padding, normalized_line, normalized_median,
+                  preamble_end):
+    """ Just the bit, for the start bits, whose settledness nothing asks about """
+    seg = bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end)
+
+    # `ndarray.mean` is the same arithmetic with several layers of dtype handling on
+    # top, and this runs about ninety thousand times a second
+    return 1 if seg.sum() / seg.size > normalized_median else 0
+
+def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
+    seg = bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end)
+    mean = seg.sum() / seg.size
+    deviation = seg - mean
+    std = math.sqrt((deviation * deviation).sum() / deviation.size)
 
     return 1 if mean > normalized_median else 0, std
 
@@ -587,14 +624,15 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
     bit_width_padding = 0.1
 
     # ---- BIT DECODING ----
-    normalized_median = np.mean(normalized_line[round(preamble_start):round(preamble_end)])
+    preamble = normalized_line[round(preamble_start):round(preamble_end)]
+    normalized_median = preamble.sum() / preamble.size
     bit_padding = math.ceil(bit_width_padding * bit_width)
 
     # assert start bit
     if (
-        get_bit(0, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
-        or get_bit(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
-        or get_bit(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 1
+        get_bit_value(0, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 0
+        or get_bit_value(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 0
+        or get_bit_value(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 1
     ):
         return None, None, 0
 
@@ -611,7 +649,8 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
     byte2 = sum(bit << i for i, bit in enumerate(bits[8:16]))
 
     if debug_plot:
-        start_bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0]
+        start_bits = [get_bit_value(i, bit_width, bit_padding, normalized_line,
+                                    normalized_median, preamble_end)
                       for i in range(START_BIT_COUNT)]
         show_debug_plot(
             normalized_line,
