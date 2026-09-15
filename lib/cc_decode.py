@@ -49,6 +49,8 @@ import re
 import sys
 import math
 
+from collections import Counter
+
 from html import escape
 
 import numpy as np
@@ -57,12 +59,16 @@ import matplotlib.pyplot as plt
 from setproctitle import setproctitle
 from multiprocessing import current_process
 
+
 PREAMBLE_RUN_IN_COUNT = 6.5
 START_BIT_ZEROS_COUNT = 2
 START_BIT_ONES_COUNT = 1
 START_BIT_COUNT = START_BIT_ZEROS_COUNT + START_BIT_ONES_COUNT
 DATA_BIT_COUNT = 16
 PRE_COMPUTED_PREAMBLE_TEMPLATES = []
+
+# a bit whose sample window varies by more than this is treated as unreliable
+MIN_STD_DEV_FOR_CORRECTION = 0.3
 
 CC_TABLE = {
     0x00: '',  # Special - included here to clear a few things up
@@ -74,6 +80,7 @@ CC_TABLE = {
 
 # Populate standard ASCII codes ASCII ranges that are shared
 CC_TABLE.update({i: chr(i) for nr in [(0x41, 0x5B), (0x61, 0x7B), (0x30, 0x3A)] for i in range(nr[0], nr[1])})
+
 
 # Two byte chars
 SPECIAL_CHARS_TABLE = {
@@ -568,9 +575,16 @@ def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_media
     return 1 if mean > normalized_median else 0, std
 
 def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot):
+    """ Slice the two data bytes out of a line
+
+    Both bytes come back as the eight bits that were on the wire, low bit first, with
+    no interpretation of the eighth: CEA-608 uses it for odd parity, StarSight uses it
+    for data, and which it is belongs to the consumer rather than here. `noisy` flags
+    the bits whose sample window was too unsettled to trust, one flag per data bit,
+    which is what the CEA-608 layer needs to correct a single bit error.
+    """
     # fraction of data to remove at edges of each detected bit
     bit_width_padding = 0.1
-    min_std_dev_for_correction = 0.3
 
     # ---- BIT DECODING ----
     normalized_median = np.mean(normalized_line[round(preamble_start):round(preamble_end)])
@@ -582,79 +596,37 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
         or get_bit(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
         or get_bit(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 1
     ):
-        return None, None, None, None
+        return None, None, 0
 
-    # build each byte
-    byte_data = np.ndarray(2, dtype=int)
-    byte_parity = np.ndarray(2, dtype=bool)
-    b_bits = np.ndarray(7, dtype=int)
-    b_stds = np.ndarray(7, dtype=float)
+    bits = []
+    noisy = 0
+    for bit_index in range(DATA_BIT_COUNT):
+        bit, std = get_bit(bit_index + START_BIT_COUNT, bit_width, bit_padding,
+                           normalized_line, normalized_median, preamble_end)
+        bits.append(bit)
+        if std > MIN_STD_DEV_FOR_CORRECTION:
+            noisy |= 1 << bit_index
 
-    for i in range(2):
-        b_data_start = START_BIT_COUNT + i * 8
-        b_parity_idx = b_data_start + 7
-        b_worst_error_idx = 0
-        b_worst_error = 0
-        b_error_count = 0
-        b_parity_calculated = 1
+    byte1 = sum(bit << i for i, bit in enumerate(bits[0:8]))
+    byte2 = sum(bit << i for i, bit in enumerate(bits[8:16]))
 
-        # get data bits
-        for b_idx in range(0, 7):
-            bit, std = get_bit(b_idx + b_data_start, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)
-            b_bits[b_idx] = bit
-            b_stds[b_idx] = std
-            # gather parity
-            b_parity_calculated += bit
-
-            # check for possible errors
-            if std > min_std_dev_for_correction:
-               b_error_count += 1
-               if b_worst_error < std:
-                  b_worst_error_idx = b_idx
-                  b_worst_error = std
-
-        # get parity bit
-        b_parity_calculated %= 2
-        b_parity_bit, b_parity_bit_std = get_bit(b_parity_idx, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)
-
-        # correct single bit errors using parity
-        if (
-            b_error_count == 1 # only one data bit error
-            and b_parity_bit != b_parity_calculated # parity miss-match
-            and b_parity_bit_std < min_std_dev_for_correction # parity bit is probably good
-        ):
-            b_bits[b_worst_error_idx] = 1 if b_bits[b_worst_error_idx] == 0 else 0
-            b_parity_calculated = b_parity_bit
-
-        # write out the bytes
-        byte_data[i] = (
-            b_bits[0]
-            | (b_bits[1] << 1)
-            | (b_bits[2] << 2)
-            | (b_bits[3] << 3)
-            | (b_bits[4] << 4)
-            | (b_bits[5] << 5)
-            | (b_bits[6] << 6)
-        )
-        byte_parity[i] = b_parity_bit == b_parity_calculated
-
-    # uncomment to debug
     if debug_plot:
-        bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] for i in range(START_BIT_COUNT + DATA_BIT_COUNT)]
+        start_bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0]
+                      for i in range(START_BIT_COUNT)]
         show_debug_plot(
             normalized_line,
             round(preamble_start),
             round(preamble_end),
             round(bit_width),
             best_score,
-            bits,
+            start_bits + bits,
             bit_width,
             bit_width_padding,
-            byte_data,
-            byte_parity
+            [byte1, byte2],
+            [cea608_byte(byte1, noisy, 0)[1], cea608_byte(byte2, noisy, 8)[1]]
         )
 
-    return byte_data[0], byte_parity[0], byte_data[1], byte_parity[1]
+    return byte1, byte2, noisy
 
 def show_debug_plot(line, preamble_start, preamble_end, width, best_score, bits, bit_width, bit_width_padding, byte_data, byte_parity):
     import numpy as np
@@ -743,18 +715,21 @@ def show_debug_plot(line, preamble_start, preamble_end, width, best_score, bits,
     plt.show()
 
 def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_plot):
+    """ Slice every line in range that carries data
+
+    No format is assumed. Each row comes back as `(row, byte1, byte2, noisy)` holding
+    the raw bytes that were on the wire, and it is for each consumer - captions, XDS,
+    StarSight - to decide whether a row is theirs and what the eighth bit means. A row
+    whose start bits did not check out comes back with both bytes None.
+    """
     rows_found = []
-    field_0_idx = None
 
     for row_idx in range(0, search_lines):
-        if field_0_idx and field_0_idx + 1 < row_idx:
-            # break if the second field was skipped
-            break
         start_idx = row_idx + start_line
         preamble_match = sync_to_preamble(img, start_idx)
 
         if preamble_match is not None and preamble_match["score"] > min_correlation:
-            b1, b1_parity, b2, b2_parity = decode_bytes(
+            byte1, byte2, noisy = decode_bytes(
                 preamble_match["normalized_line"],
                 preamble_match["preamble_start"],
                 preamble_match["preamble_end"],
@@ -763,36 +738,148 @@ def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_p
                 debug_plot,
             )
 
-            rows_found.append((start_idx, b1, b1_parity, b2, b2_parity))
-            if field_0_idx == None:
-                field_0_idx = row_idx
+            rows_found.append((start_idx, byte1, byte2, noisy))
 
     return rows_found
 
-def extract_closed_caption_bytes(img, start_line, search_lines, min_correlation, debug_plot):
-    """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
-    # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
-    decoded_rows = []
-    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_plot):
-        control = (b1, b2) in ALL_CC_CONTROL_CODES
-    
-        # handle parity errors
-        # https://www.law.cornell.edu/cfr/text/47/79.101
-        if not b2_parity:
-            if control:
+def cea608_byte(byte, noisy, offset):
+    """ Apply the CEA-608 byte layer to one raw byte
+
+    CEA-608 carries seven data bits and odd parity in the eighth. A single data bit
+    that was sliced from an unsettled window is corrected from the parity bit, which
+    is what the parity is there for. Returns `(value, parity_ok)`.
+    """
+    data = byte & 0x7F
+    parity_bit = byte >> 7
+    calculated = (bin(data).count('1') + 1) % 2
+
+    errors = [i for i in range(7) if noisy & (1 << (offset + i))]
+    if (
+        len(errors) == 1                              # only one data bit error
+        and parity_bit != calculated                  # parity miss-match
+        and not noisy & (1 << (offset + 7))           # parity bit is probably good
+    ):
+        data ^= 1 << errors[0]
+        calculated = parity_bit
+
+    return data, parity_bit == calculated
+
+def cea608_parity_ok(byte):
+    """ True if a raw byte carries valid CEA-608 odd parity
+
+    Seven data bits plus an odd parity bit means all eight sum odd. A line that fails
+    this far more often than noise explains is not carrying captions.
+    """
+    return bin(byte).count('1') % 2 == 1
+
+class LineParityRate:
+    """ How often each line's bytes carry valid CEA-608 odd parity
+
+    Shared measurement, because it is what tells the VBI services apart: a caption
+    line passes on very nearly every field, while StarSight - which uses the eighth bit
+    for data - and noise that merely correlated with the preamble pass at chance. Each
+    format decides for itself which side of that it wants.
+    """
+
+    MIN_FIELDS = 20
+
+    def __init__(self):
+        self._fields = Counter()
+        self._passed = Counter()
+
+    def update(self, row_num, byte1, byte2):
+        self._fields[row_num] += 1
+        if cea608_parity_ok(byte1) and cea608_parity_ok(byte2):
+            self._passed[row_num] += 1
+
+    def rate(self, row_num):
+        """ None until there are enough fields to judge the line """
+        seen = self._fields[row_num]
+        if seen < self.MIN_FIELDS:
+            return None
+        return self._passed[row_num] / seen
+
+class Cea608Lines:
+    """ Which lines the caption formats should read
+
+    Every line in range is sliced and offered to every format, so the caption side has
+    to turn away lines that are not CEA-608. A line is accepted while it is still
+    being measured, so captions are never held up at the start of a file, and dropped
+    once its parity rate says it is carrying something else.
+    """
+
+    MIN_PARITY_RATE = 0.75
+
+    def __init__(self):
+        self._parity = LineParityRate()
+        self._rejected = set()
+
+    def update(self, row):
+        row_num, byte1, byte2, _ = row
+        if byte1 is None:
+            return
+
+        self._parity.update(row_num, byte1, byte2)
+        rate = self._parity.rate(row_num)
+        if rate is None:
+            return
+
+        if rate < self.MIN_PARITY_RATE:
+            self._rejected.add(row_num)
+        else:
+            self._rejected.discard(row_num)
+
+    def accepts(self, row_num):
+        return row_num not in self._rejected
+
+def decode_cea608_row(row):
+    """ Turn one raw row into the CEA-608 tuple its consumers expect
+
+    Returns None for a row the spec says to drop: a control code whose second byte
+    failed parity.
+    """
+    row_num, byte1, byte2, noisy = row
+
+    if byte1 is None:
+        # the start bits did not check out, so there are no bytes to read
+        return (row_num, decode_byte_pair(False, 0x7f, 0x7f), False, 0x7f, False, 0x7f, False)
+
+    b1, b1_parity = cea608_byte(byte1, noisy, 0)
+    b2, b2_parity = cea608_byte(byte2, noisy, 8)
+
+    control = (b1, b2) in ALL_CC_CONTROL_CODES
+
+    # handle parity errors
+    # https://www.law.cornell.edu/cfr/text/47/79.101
+    if not b2_parity:
+        if control:
+            return None
+        b2 = 0x7f
+
+    if not b1_parity:
+        control = False # treat this as a print character when parity fails
+        b1 = 0x7f
+
+    return (row_num, decode_byte_pair(control, b1, b2), control, b1, b1_parity, b2, b2_parity)
+
+def decode_cea608_rows(rows, lines=None):
+    """ The CEA-608 byte layer over one frame of raw rows
+
+    Pass a `Cea608Lines` to have lines that are not carrying captions dropped. The
+    debug and status writers pass nothing, since they are there to show every line.
+    """
+    decoded = []
+    for row in rows:
+        if lines is not None:
+            lines.update(row)
+            if not lines.accepts(row[0]):
                 continue
-            else:
-                b2 = 0x7f
 
-        if not b1_parity:
-            control = False # treat this as a print character when parity fails
-            b1 = 0x7f
+        converted = decode_cea608_row(row)
+        if converted is not None:
+            decoded.append(converted)
+    return decoded
 
-        code = decode_byte_pair(control, b1, b2)
-        decoded_rows.append((row_num, code, control, b1, b1_parity, b2, b2_parity))
-
-    return decoded_rows
-    
 def get_output_function(extension, output_filename, end="\n"):
     if output_filename is not None:
         f = open(output_filename + f".{extension}", 'w')
@@ -814,6 +901,7 @@ def decode_captions_raw(rx, output_filename, options):
     setproctitle(current_process().name)
     buff = ''  # CC Buffer
     frame = 0
+    lines = Cea608Lines()
 
     out_func, f = get_output_function("captions.raw", output_filename)
 
@@ -825,7 +913,7 @@ def decode_captions_raw(rx, output_filename, options):
         except:
             break
 
-        for row in rows:
+        for row in decode_cea608_rows(rows, lines):
             row_num, code, control, b1, _, b2, _ = row
 
             if code is None:
@@ -858,7 +946,7 @@ def decode_captions_debug(rx, output_filename, options):
         except:
             break
 
-        for row in rows:
+        for row in decode_cea608_rows(rows):
            row_num, code, _, b1, b1_parity, b2, b2_parity = row
 
            if code is None:
@@ -873,10 +961,20 @@ def decode_captions_debug(rx, output_filename, options):
     
     return codes
 
+def scc_timecode(frames):
+    """ Return a drop frame SCC timecode for a frame number """
+    frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
+    frs = frame_number % 30
+    s = (frame_number / 30) % 60
+    m = ((frame_number / 30) / 60) % 60
+    h = (((frame_number / 30) / 60) / 60) % 24
+    return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
+
+
 class CaptionTrack:
     def __init__(self, cc_track, output_filename, options, extension):
         self._cc_track = cc_track
-        self._field_number = CC_CHANNEL_TO_FIELD[self._cc_track]
+        self._field_number = CC_CHANNEL_TO_FIELD.get(self._cc_track)
         self._output_filename = output_filename
         self._options = options
         self._extension = extension
@@ -1101,12 +1199,7 @@ class SCCCaptionTrack(CaptionTrack):
         out_func('%s\t%s' % (self._get_timecode(frames), "".join(scc_data)))
 
     def _get_timecode(self, frames):
-        frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
-        frs = frame_number % 30
-        s = (frame_number / 30) % 60
-        m = ((frame_number / 30) / 60) % 60
-        h = (((frame_number / 30) / 60) / 60) % 24
-        return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
+        return scc_timecode(frames)
     
     def _get_subtitle_data(self, data):
         _, _, _, byte1, _, byte2, _ = data
@@ -1121,6 +1214,7 @@ class TextCaptionTrack(CaptionTrack):
         self.space_character = " "
         self.line_break_character = "\n"
         self.output_end = ""
+        self.pending_indent = None
 
     def close(self):
         if len(self._text_buffer) > 0:
@@ -1230,6 +1324,7 @@ class TextCaptionTrack(CaptionTrack):
                 # only handle control characters once
                 super().add_text(data, frames)
                 if 'Carriage Return' in code:
+                    self.pending_indent = None
                     self.write_text(frames)
                     self.clear_text()
                 else:
@@ -1239,10 +1334,19 @@ class TextCaptionTrack(CaptionTrack):
                         # when there's a data interruption, the decoder resets the cursor to first column
                         # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
                         # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
-                        self._text_buffer = []
-                        # re-add the indent code
-                        super().add_text(data, frames)
+                        #
+                        # the reset waits for a character to actually arrive. A text
+                        # service sends the indent both before a retransmitted line and
+                        # again just before the carriage return that commits it, so
+                        # clearing here outright would throw the line away a moment
+                        # before it is written.
+                        self.pending_indent = data
         else:
+            if self.pending_indent is not None:
+                # characters are following the indent, so the line is being sent again
+                self._text_buffer = []
+                super().add_text(self.pending_indent, frames)
+                self.pending_indent = None
             super().add_text(data, frames)
 
         self.previous_frames = frames
@@ -1559,6 +1663,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
     def add_on_screen_roll_up(self, data, frames):
         self._roll_up_buffer.append(data)
 
+
 class CaptionTrackFactory():
     def __init__(self, track_class, output_filename, options):
         self._field_to_active_track = [None, None] # stores the active track for each field
@@ -1567,9 +1672,10 @@ class CaptionTrackFactory():
         self._output_filename = output_filename
         self._track_class = track_class
         self._options = options
+        self._lines = Cea608Lines()
 
     def add_data(self, rows, frame):
-        for row in rows:
+        for row in decode_cea608_rows(rows, self._lines):
             detected_field = None
             row_num, code, _, b1, b1_parity, _, b2_parity = row
 
@@ -1892,6 +1998,7 @@ def decode_xds_packets(rx, output_filename, options):
     packetbuf = []
     xds_row = -1
     gather_xds_bytes = False
+    lines = Cea608Lines()
 
     out_func = None
     f = None
@@ -1905,6 +2012,8 @@ def decode_xds_packets(rx, output_filename, options):
             break
 
         frame += 1
+
+        rows = decode_cea608_rows(rows, lines)
 
         # check for xds row, and replace row if found in another row
         for row in rows:
