@@ -28,7 +28,7 @@ How it sits next to the other two services
 |---|---|---|---|
 | eighth bit | odd parity | odd parity | data |
 | distinguished by | - | Resume Text Display | parity failure |
-| payload | programme captions | wire copy | binary packets |
+| payload | program captions | wire copy | binary packets |
 
 StarSight separates easily because it spends the eighth bit on data and so fails CEA-608
 parity at chance. This service **passes parity**, because it *is* CEA-608. What marks it
@@ -37,7 +37,7 @@ the mode, while a caption line sends it rarely or never. In the 1992 capture it 
 for 4,592 control codes against 1,462 Roll-Up.
 
 It is also **multiplexed with real captions on the same channel** - the encoder alternates
-text mode with roll-up, so one CEA-608 channel carries a captioned programme and a text
+text mode with roll-up, so one CEA-608 channel carries a captioned program and a text
 service at once. That part the caption path already handled.
 
 The fix: the cursor reset has to wait

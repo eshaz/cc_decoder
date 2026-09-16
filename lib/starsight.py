@@ -68,18 +68,60 @@ def starsight_crc(data):
 # All times on the wire are minutes since midnight GMT on 1 January 1992.
 STARSIGHT_EPOCH = datetime.datetime(1992, 1, 1)
 
-# Command: flags and type in byte 0, then a length that includes those bytes. Which
-# types carry a one byte length and which a two byte one is fixed by the protocol.
-# widths taken from SSLOAD.DLL's command descriptor table (64 entries of 8 bytes at
-# image offset 0x14610, indexed by `byte0 & 0x3F`; bit 7 of entry[4] selects two)
-COMMAND_LENGTH_ONE_BYTE = frozenset((1, 2, 4, 6, 8, 13, 14, 15, 17, 20))
-COMMAND_LENGTH_TWO_BYTE = frozenset((3, 5, 11, 12, 21, 22, 24))
+COMMAND_TABLE = {
+    0:  (1, 0,  'none'),         1:  (1, 2,  'implemented'), 2:  (1, 2,  'implemented'),
+    3:  (2, 10, 'implemented'),  4:  (1, 5,  'implemented'), 5:  (2, 11, 'implemented'),
+    6:  (1, 5,  'implemented'),  7:  (1, 2,  'none'),        8:  (1, 5,  'implemented'),
+    9:  (1, 2,  'implemented'),  10: (1, 2,  'implemented'), 11: (2, 5,  'implemented'),
+    12: (2, 5,  'implemented'),  13: (1, 8,  'implemented'), 14: (1, 2,  'none'),
+    15: (1, 2,  'none'),         16: (1, 2,  'none'),        17: (1, 2,  'none'),
+    18: (1, 2,  'none'),         19: (1, 2,  'none'),        20: (1, 2,  'stub'),
+    21: (2, 3,  'stub'),         22: (2, 12, 'stub'),        23: (2, 3,  'none'),
+    24: (2, 9,  'stub'),         25: (1, 2,  'none'),        26: (1, 2,  'none'),
+    27: (1, 2,  'none'),         28: (1, 2,  'none'),        29: (2, 3,  'none'),
+    30: (2, 3,  'none'),         31: (2, 3,  'implemented'), 32: (2, 3,  'stub'),
+    33: (2, 3,  'stub'),         34: (2, 3,  'stub'),        35: (2, 3,  'stub'),
+    36: (2, 3,  'implemented'),  37: (2, 3,  'implemented'), 38: (2, 3,  'implemented'),
+    39: (2, 3,  'implemented'),  40: (2, 3,  'implemented'), 41: (2, 3,  'none'),
+    42: (2, 3,  'implemented'),
+}
+COMMAND_TABLE.update({t: (2, 3, 'none') for t in range(43, 64)})
+
+# Where each thing this decoder knows actually came from. Three sources, in the order they
+# are trusted: a capture settles it, the loader's own code settles the layout, a patent
+# settles what something is for. `docs/starsight_tables.py` renders this against every row
+# it publishes, so a reader can tell a measured fact from an inferred one.
+MEASURED = 'measured'   # seen and confirmed in one of the five captures
+LOADER = 'loader'       # read from SSLOAD.DLL; no capture contains it
+PATENT = 'patent'       # described by the patents; neither measured nor in the loader
+
+PROVENANCE_NOTES = {
+    MEASURED: 'Confirmed against the captures, byte for byte.',
+    LOADER: "Read from SSLOAD.DLL's own code. No capture contains this, so the layout is "
+            'as the loader reads it and has not been seen on a wire.',
+    PATENT: 'Described in the StarSight patents. Neither measured nor present in the loader.',
+}
+
+# Which command types a capture has actually carried.
+COMMANDS_SEEN = frozenset((1, 2, 5, 6, 8, 20, 21))
+
+# A type the loader has code for is a type that can appear on the wire, so all of them are
+# framed. Anything else would desynchronise the reader rather than be skipped.
+COMMAND_LENGTH_ONE_BYTE = frozenset(t for t, (w, _, h) in COMMAND_TABLE.items()
+                                    if w == 1 and h != 'none')
+COMMAND_LENGTH_TWO_BYTE = frozenset(t for t, (w, _, h) in COMMAND_TABLE.items()
+                                    if w == 2 and h != 'none')
 
 COMMAND_TIME = 1
 COMMAND_DAYLIGHT_SAVING = 2
 COMMAND_SHOW_LIST = 5
 COMMAND_SHOW_TITLE = 6
 COMMAND_SHOW_DESCRIPTION = 8
+COMMAND_REGION = 3
+COMMAND_CHANNEL_DATA = 4
+COMMAND_THEME_CATEGORY = 11
+COMMAND_THEME_SUB_CATEGORY = 12
+COMMAND_SUBSCRIBER_RESET = 13
 COMMAND_SEQUENCE_NUMBER = 20
 COMMAND_STATION_NODE_STATUS = 21
 
@@ -454,6 +496,97 @@ def decode_station_node(command):
     return StationNode(STATION_EPOCH + datetime.timedelta(seconds=_u32(command, STATION_ASSEMBLED)),
                        STATION_EPOCH + datetime.timedelta(seconds=_u32(command, STATION_CLOCK)))
 
+# Channel Data, type 4. The call sign is not stored as a string: byte 7 is a presence
+# mask, taken from the top bit down, saying which of the eight bytes at 8-15 are really
+# letters. The loader copies the selected ones and pads the result to four with spaces.
+CHANNEL_NUMBER_HIGH_BIT = 0x80
+CHANNEL_CALL_SIGN_AT = 8
+CHANNEL_CALL_SIGN_BYTES = 8
+CHANNEL_CALL_SIGN_WIDTH = 4
+CHANNEL_SHOWS_CALL_SIGN = 0x02
+
+ChannelData = namedtuple('ChannelData', 'channel number call_sign shows_call_sign')
+
+def decode_channel_data(command):
+    """ `(channel, number, call sign, shows call sign)` from a Channel Data command
+
+    The command this format needs and no capture contains: it binds a Show List's bare
+    channel id to a tuning position and a set of call letters. Everything here is read
+    from SSLOAD.DLL's type 4 handler and **nothing confirms it against a broadcast**,
+    because the command rides a carousel slow enough that no half hour window caught one.
+    """
+    if len(command) < CHANNEL_CALL_SIGN_AT + CHANNEL_CALL_SIGN_BYTES:
+        return None
+    channel = ((command[3] & 0x7F) << 8) | command[4]
+    number = command[6] | (0x100 if command[3] & CHANNEL_NUMBER_HIGH_BIT else 0)
+
+    present = command[7]
+    letters = ''
+    for index in range(CHANNEL_CALL_SIGN_BYTES):
+        if present & (0x80 >> index):
+            letters += chr(command[CHANNEL_CALL_SIGN_AT + index])
+    call_sign = letters[:CHANNEL_CALL_SIGN_WIDTH].ljust(CHANNEL_CALL_SIGN_WIDTH).rstrip()
+
+    return ChannelData(channel, number, call_sign,
+                       bool(command[5] & CHANNEL_SHOWS_CALL_SIGN))
+
+# Theme Category and Theme Sub-Category, types 11 and 12. Both carry a version byte that
+# the loader compares against the one it stored, reloading everything when it changes, then
+# a count, then that many variable length entries. A name is a plain NUL terminated string,
+# not Huffman coded - these are the only strings in the format that are not compressed.
+THEME_ENTRIES_AT = 5
+THEME_ENTRY_HEADER = 3
+
+def decode_theme_names(command):
+    """ `(version, [(id, name)])` from a Theme Category or Sub-Category command
+
+    Read from SSLOAD.DLL's type 11 and 12 handlers, which walk the entries identically.
+    No capture contains either command, so this is unconfirmed against a broadcast; it is
+    what would fill `themes[].name`.
+    """
+    if len(command) <= THEME_ENTRIES_AT:
+        return None
+    version = command[3]
+    count = command[4] & 0x7F
+
+    entries = []
+    offset = THEME_ENTRIES_AT
+    while len(entries) < count and offset + THEME_ENTRY_HEADER <= len(command):
+        identifier, length = command[offset], command[offset + 2]
+        body = command[offset + THEME_ENTRY_HEADER:offset + THEME_ENTRY_HEADER + length]
+        name = body.split(b'\0')[0].decode('latin1') if body else ''
+        entries.append((identifier, name))
+        offset += THEME_ENTRY_HEADER + length
+    return version, entries
+
+RegionData = namedtuple('RegionData', 'region value')
+
+def decode_region(command):
+    """ `(region id, a 32 bit field)` from a Region command
+
+    The patents describe this as the command that names every channel a receiver in one
+    territory can see, sent once per region, and say a Subscriber Unit learns its region id
+    from an Authorization command before it can use any Channel Data. SSLOAD.DLL's type 3
+    handler reads the two fields below out of a ten byte header; what follows them is a
+    list this cannot yet name. Unconfirmed against a broadcast.
+    """
+    if len(command) < 10:
+        return None
+    return RegionData(_u16(command, 3), _u32(command, 6))
+
+SUBSCRIBER_RESET_ACTIONS = ((0x01, 'clear stored guide'), (0x02, 'clear stored settings'))
+
+def decode_subscriber_reset(command):
+    """ What a Subscriber Reset command asks a receiver to discard
+
+    SSLOAD.DLL's type 13 handler tests two bits of byte 2 and calls a different routine for
+    each; the names below are what those routines appear to do and are the least certain
+    thing in this file. Unconfirmed against a broadcast.
+    """
+    if len(command) < 3:
+        return None
+    return [name for mask, name in SUBSCRIBER_RESET_ACTIONS if command[2] & mask]
+
 def decode_sequence_number(command):
     return _u32(command, 2)
 
@@ -487,7 +620,8 @@ def new_guide():
     """
     return {'pending': {}, 'slots': [], 'blocks': {}, 'titles': {}, 'descriptions': {},
             'clock': [], 'daylight': [], 'sequence': [], 'station': [],
-            'packets': [], 'undecodable': Counter()}
+            'channel_data': {}, 'theme_names': {}, 'regions': [], 'resets': [],
+            'unnamed': Counter(), 'packets': [], 'undecodable': Counter()}
 
 def describe_starsight_command(command_type, command, guide):
     """ The lines one command contributes to the log, in broadcast order
@@ -548,6 +682,39 @@ def describe_starsight_command(command_type, command, guide):
         return [_slot_line('Show List', channel, start, minutes, show_id, '(title not sent yet)')
                 for start, minutes, show_id, _, _, _ in slots]
 
+    if command_type == COMMAND_CHANNEL_DATA:
+        channel = decode_channel_data(command)
+        if channel is None:
+            return []
+        guide['channel_data'][channel.channel] = channel
+        return ['Channel Data ch %-6d number %-4d %s' % (
+            channel.channel, channel.number, channel.call_sign or '(no call sign)')]
+
+    if command_type in (COMMAND_THEME_CATEGORY, COMMAND_THEME_SUB_CATEGORY):
+        named = decode_theme_names(command)
+        if named is None:
+            return []
+        version, entries = named
+        for identifier, name in entries:
+            guide['theme_names'][identifier] = name
+        return ['%-12s version %-4d %d name%s' % (
+            COMMAND_NAMES[command_type], version, len(entries),
+            '' if len(entries) == 1 else 's')]
+
+    if command_type == COMMAND_REGION:
+        region = decode_region(command)
+        if region is None:
+            return []
+        guide['regions'].append(region)
+        return ['Region       id %-6d %d' % (region.region, region.value)]
+
+    if command_type == COMMAND_SUBSCRIBER_RESET:
+        actions = decode_subscriber_reset(command)
+        if actions is None:
+            return []
+        guide['resets'].append(tuple(actions))
+        return ['Reset        %s' % (', '.join(actions) or 'nothing')]
+
     if command_type == COMMAND_STATION_NODE_STATUS:
         # 733 fixed bytes of the station's own health, about every five minutes. Roughly
         # 95% of it is identical from one to the next; what moves is a pair of 32 bit
@@ -579,6 +746,10 @@ def describe_starsight_command(command_type, command, guide):
         return ['Time         %s GMT  station offset %+d hours%s' % (
             when.strftime('%Y-%m-%d %H:%M:%S'), zone,
             ', daylight saving' if daylight else '')]
+
+    if COMMAND_TABLE.get(command_type, (0, 0, 'none'))[2] == 'implemented':
+        guide['unnamed'][command_type] += 1
+        return ['Type %-8d %d bytes (no published meaning)' % (command_type, len(command))]
 
     return []
 
@@ -910,6 +1081,21 @@ def _iso(when):
     """ The wire carries GMT, so every instant in the export is written as GMT """
     return when.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+def _channel_entry(channel, data):
+    """ One channel, with whatever a Channel Data command said about it
+
+    A capture that carries no Channel Data leaves every channel as a bare id, which is
+    what all five of them do; the fields only appear once one is caught.
+    """
+    entry = {'id': channel}
+    if data is not None:
+        if data.call_sign:
+            entry['callSign'] = data.call_sign
+        entry['channelNumber'] = data.number
+        if data.shows_call_sign:
+            entry['showsCallSign'] = True
+    return entry
+
 def _description_entry(description_id, text, rating):
     """ One Show Description, with whatever its extended form carried
 
@@ -945,6 +1131,7 @@ def write_starsight_json(output_filename, guide):
     """
     slots, titles, descriptions = guide['slots'], guide['titles'], guide['descriptions']
     clock, daylight = guide['clock'], guide['daylight']
+    channel_data, theme_names = guide['channel_data'], guide['theme_names']
 
     programs = {}
     for show_id in {slot[3] for slot in slots} | set(titles):
@@ -980,8 +1167,11 @@ def write_starsight_json(output_filename, guide):
         listings.append(listing)
 
     document = {
-        'channels': [{'id': channel} for channel in sorted({slot[1] for slot in slots})],
-        'themes': [{'id': theme} for theme in sorted({t[0] for t in titles.values()})],
+        'channels': [_channel_entry(channel, channel_data.get(channel))
+                     for channel in sorted({slot[1] for slot in slots} | set(channel_data))],
+        'themes': [dict({'id': theme}, **({'name': theme_names[theme]}
+                                          if theme in theme_names else {}))
+                   for theme in sorted({t[0] for t in titles.values()} | set(theme_names))],
         'programs': [programs[show_id] for show_id in sorted(programs)],
         'descriptions': [_description_entry(description_id, text, rating)
                          for description_id, (text, rating) in sorted(descriptions.items())],
@@ -1020,6 +1210,16 @@ def read_starsight_json(document):
                  | (ATTRIBUTE_STEREO if program.get('stereo') else 0)
                  | (ATTRIBUTE_BLACK_AND_WHITE if program.get('blackAndWhite') else 0))
         guide['titles'][program['id']] = (program['theme'], program['title'], flags)
+
+    for entry in document.get('channels', ()):
+        if 'callSign' in entry or 'channelNumber' in entry:
+            guide['channel_data'][entry['id']] = ChannelData(
+                entry['id'], entry.get('channelNumber', 0), entry.get('callSign', ''),
+                entry.get('showsCallSign', False))
+
+    for entry in document.get('themes', ()):
+        if 'name' in entry:
+            guide['theme_names'][entry['id']] = entry['name']
 
     for entry in document.get('descriptions', ()):
         rating = None
@@ -1156,6 +1356,8 @@ def merge_guides(guides, expire=False):
         merged['clock'] += guide['clock']
         merged['daylight'] += guide['daylight']
         merged['sequence'] += guide['sequence']
+        merged['channel_data'].update(guide['channel_data'])
+        merged['theme_names'].update(guide['theme_names'])
 
     merged['blocks'] = blocks
     slots = {slot for block in blocks.values() for slot in block}
@@ -1197,7 +1399,6 @@ def write_starsight_html(output_filename, guide, counts=None):
     if clock:
         _, zone, saving = clock[-1]
         offset = zone + (1 if saving else 0)
-    stamp = 'station time' if offset is not None else 'Greenwich Mean Time'
 
     esc = html.escape
     out_func("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
