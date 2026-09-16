@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eshaz/cc_decoder/schema/starsight.schema.json",
+  "title": "Decoded StarSight electronic program guide",
+  "description": "One capture of the StarSight Data Transmission Network guide, decoded from the NTSC vertical blanking interval by cc_decoder. Only what the broadcast carried: five entity tables, a flat listings array and the station clock. Nothing about the decode itself - no source file, no decoder version, no timestamps, no counts - appears anywhere in the document. All times are GMT; the station's offset from GMT is carried per Time command in clock[]. Ids are the numbers that were on the wire, never renumbered. Field semantics below marked CONFIRMED are taken from SSLOAD.DLL, the Microsoft StarSight Guide Data Loader shipped on the Windows 98 SE CD (md5 6a85a39dd536cfe582d19090fd48e68e), which contains the original command parser.",
+  "type": "object",
+  "required": [
+    "channels",
+    "programs",
+    "listings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "channels": {
+      "description": "Every channel referenced by a listing. The id is a StarSight-internal 16-bit number with no public meaning: it is not a call sign, not a dial position, and not comparable to any other provider's numbering. Equivalent to schema.org BroadcastChannel.broadcastChannelId and to Schedules Direct's opaque stationID, NOT to XMLTV's channel/@id (which is meant to be a DNS-like name).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The channel id exactly as broadcast in the Show List command. 15 bits: SSLOAD.DLL masks byte 4 with 0x7F before combining it with byte 5. No capture has used bit 15. Purely internal to StarSight - it is not a channel number and not a frequency.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "callSign": {
+            "description": "Station call letters. ALWAYS ABSENT in every capture decoded so far: they ride the Channel Data command (type 4), which none of the five captures contains. SSLOAD.DLL's type 4 handler reads the same 15-bit channel id plus a 9-bit tuning channel number.",
+            "type": "string"
+          },
+          "displayName": {
+            "description": "Human-readable channel name, if ever learned. Same provenance and same caveat as callSign. Name borrowed from schema.org broadcastDisplayName; deliberately optional, unlike XMLTV's mandatory display-name, because StarSight normally gives a bare number and nothing else.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "themes": {
+      "description": "The theme ids seen on Show Title commands. A theme is StarSight's genre grouping - it is why IROC, NASCAR 2Day and RPM 2Day share one id and Grow It!, How 2 and Fix It Up! share another. Modelled on schema.org DefinedTerm {termCode, name?}, the only one of the three surveyed standards where a numeric code may exist without a name. XMLTV <category> and Schedules Direct genres[] are both display strings with no id hook and cannot represent this.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "16-bit theme id as broadcast. Referenced by programs[].theme.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "name": {
+            "description": "Genre label. ALWAYS ABSENT so far: the names ride command types this capture does not carry. SSLOAD.DLL stores them as 'G Name' and 'SG Name' in its Genre and SubGenre tables.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "programs": {
+      "description": "One entry per distinct show id, from Show Title commands and from Show List slots. A program may have NO title: the schedule is always broadcast ahead of the names and a title arrives only when its carousel slot comes round, so a capture routinely references ids it never names (1,471 of 3,706 in the October capture). An entry with an id and no title is normal data, not an error, and a page should render it as 'unknown programme' rather than dropping the listing. This schedule/program split on an opaque key is Schedules Direct's model (programs fetched separately from schedules and joined on programID); XMLTV cannot express it at all, because its <programme> content model requires title+.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Show id as broadcast: the plain 16-bit big-endian value at bytes 3-4 of the Show Title command. SSLOAD.DLL reads exactly those two bytes, which settles that the low nibble of the flag byte is not part of the id.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048575
+          },
+          "title": {
+            "description": "Programme title, Huffman-decompressed. Absent when no Show Title for this id was captured. May legitimately be the empty string (one occurrence in the October capture, show id 22876).",
+            "type": "string"
+          },
+          "theme": {
+            "description": "References themes[].id. The 16-bit big-endian value at bytes 5-6 of the Show Title command. In SSLOAD.DLL's database a Theme is a (Genre, SubGenre) pair - the Theme table is exactly 'T Theme ID', 'T Genre ID', 'T SubGenre ID' - so a theme id names a genre and a subgenre together. Absent exactly when title is absent, since both ride the same command.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "closedCaptioned": {
+            "description": "CONFIRMED. Bit 6 of the Show Title flag byte. SSLOAD.DLL's type 6 handler copies this bit to the record flag it later reads as 'TS Closed Caption', the Access column the loader writes. Set on 21.5% of titles.",
+            "type": "boolean",
+            "const": true
+          },
+          "stereo": {
+            "description": "CONFIRMED. Bit 5 of the Show Title flag byte, which SSLOAD.DLL carries through to 'TS Stereo'. Set on 24.8%/29.8% of titles depending on the capture.",
+            "type": "boolean",
+            "const": true
+          },
+          "blackAndWhite": {
+            "description": "CONFIRMED. Bit 4 of the Show Title flag byte, which SSLOAD.DLL attaches to the episode as the broadcast property abbreviated 'B/W'. 458 distinct titles set it; a random sample of 40 was pre-1960 film without exception.",
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    "descriptions": {
+      "description": "Show Description records. THE IDS HERE ARE IN A DIFFERENT NUMBERING SPACE from programs[] - a listing points at one through its own description field. The extended form of the command also carries a content rating and five advisory bits, which are skipped rather than exported.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Description id as broadcast: the 16-bit big-endian value at bytes 3-4 of the Show Description command. NOT a show id - descriptions are numbered in their own space.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048575
+          },
+          "text": {
+            "description": "Description text, Huffman-decompressed. Often begins with a US TV parental rating token ('TV14 ', 'TVG ') run together with the synopsis; this schema does not split it out, because the wire does not.",
+            "type": "string"
+          },
+          "year": {
+            "type": "integer",
+            "minimum": 1900,
+            "maximum": 1999,
+            "description": "Year of production, present only on the extended form of the Show Description command (bit 3 of the flag byte). Byte 9 carries the last two digits and SSLOAD.DLL renders it with the format string '19%d', so the century is fixed; a byte of zero means the extended form carried no year. Verified against the films themselves: 1946 for Fredric March and Myrna Loy is The Best Years of Our Lives, 1944 for Tallulah Bankhead is Lifeboat, 1926 for the description that says 'Silent' and names Douglas Fairbanks is The Black Pirate."
+          },
+          "ratingSystem": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7,
+            "description": "Which rating system the rating field is numbered in: the top three bits of byte 7 of the extended Show Description. Present exactly when the extended form was used. Five of the eight appear in the April capture, and they behave as distinct systems - system 0 is the one adult titles use. SSLOAD.DLL keeps the system and the rating as two numbers and never maps them to a name from the wire."
+          },
+          "rating": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15,
+            "description": "The rating within ratingSystem: bits 4-1 of byte 7. Only 0-7 are meaningful - SSLOAD.DLL clamps anything above 7. The same code means different things in different systems, so it is exported as broadcast and not translated. Where a rating has a printable name it is already at the front of text ('TVG', 'TV14', 'TVPG', 'TVM'), which is where the loader reads it from as well."
+          },
+          "advisories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true,
+            "description": "Content advisories, from the bits of byte 8 of the extended form. Names are SSLOAD.DLL's own, which it pairs with these bits: nudity 0x02, violence 0x04, adult situations 0x08, adult themes 0x10, adult language 0x80. Omitted when no bit is set. Bits 0, 5 and 6 are set by nothing in any capture. Checked against the titles: every description carrying nudity+adult situations+adult language is an adult film, and violence lands on The Getaway, Talk Radio and Rapa Nui."
+          }
+        }
+      }
+    },
+    "listings": {
+      "description": "The schedule: one entry per Show List slot, flat, sorted by channel then start. Every entry names its channel and programme by id and carries no titles of its own. Deliberately NOT nested by channel or by programme and deliberately NOT accompanied by prebuilt indexes - see notes.md for the measurements behind both decisions.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "channel",
+          "start",
+          "durationMinutes",
+          "program",
+          "slotFlags"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "description": "References channels[].id.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "start": {
+            "description": "Start of the slot, GMT, ISO-8601 with a literal Z. ALWAYS GMT AND ALWAYS EXPLICIT - full precision and an explicit zone are required, following Schedules Direct's airDateTime rather than XMLTV, whose start permits any initial substring so that the bare string '1998' is a legal timestamp. Derived: the wire gives one absolute start per Show List command and a duration per slot, each duration advancing the clock. Station wall clock = this + capture.utcOffsetMinutes (+60 if capture.daylightSaving).",
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+          },
+          "durationMinutes": {
+            "description": "Slot length in whole minutes, exactly as broadcast; 5 to 240 in the captures examined. Named for its unit on purpose: XMLTV requires a units attribute here and Schedules Direct uses seconds, so a bare 'duration' would be ambiguous. There is no stop field - it is start + durationMinutes and storing it would be 24,000 redundant timestamps.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "program": {
+            "description": "References programs[].id. The referenced entry may have no title - that is the normal carousel case, not a dangling reference. Show id 0 is a real value used for midnight continuation slots; see joinedInProgress.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048575
+          },
+          "description": {
+            "description": "References descriptions[].id, in the SEPARATE description numbering space. Present on about 48% of slots, and usually dangles - see descriptions[]. The two byte width of this field is not a limitation: description ids are 16 bits, which SSLOAD.DLL's type 8 handler settles by reading bytes 3-4 and nothing else. The apparent need for 20 bits was this decoder folding the extended-form flag into the id. A reader should still treat an unresolvable reference as 'description not in this capture' rather than as a decode error: no capture so far carries both a Show List and the descriptions its slots point at.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "showGroup": {
+            "description": "The optional show-group field selected by bit 5 of the slot flags. Meaning unknown - it fires on 1 slot in 43,429 across all three captures, far too rare to characterise. Carried so nothing is lost.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "joinedInProgress": {
+            "description": "Bit 0 of the slot flags. SSLOAD.DLL's Show List handler treats a leading slot with this bit set specially, consuming it and taking its duration as elapsed time rather than as a programme of its own - the placeholder for a programme already running when the list starts.",
+            "type": "boolean",
+            "const": true
+          },
+          "slotFlags": {
+            "description": "The raw slot flag byte, always present, so nothing the wire carried is lost to this schema's interpretation of it. Bit 7 = a description id follows (expressed as 'description'); bit 5 = a show group follows (expressed as 'showGroup'); bit 0 = midnight continuation (expressed as 'joinedInProgress'); bits 1-4 are the show id high nibble, already folded into 'program' and always zero in practice. BIT 6 IS UNIDENTIFIED: it fires on about 2.5% of slots, which are 90/120/150/180 minutes long almost without exception, carry a description 97.8% of the time, and whose decodable titles are feature films. A movie or long-form marker is the obvious reading and is NOT confirmed; read this bit yourself rather than trusting the guess.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        }
+      }
+    },
+    "clock": {
+      "type": "array",
+      "description": "The station clock, sent about twice a minute as a Time command. Present because it is something the broadcast carried, not because the decoder needed it.",
+      "items": {
+        "type": "object",
+        "required": [
+          "time",
+          "utcOffsetMinutes",
+          "daylightSaving"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The instant the command carried, GMT, ISO-8601 with a literal Z. Bytes 2-5 are a 32-bit big-endian minute count from 1992-01-01 GMT; byte 7 adds seconds."
+          },
+          "utcOffsetMinutes": {
+            "type": "integer",
+            "description": "The station's STANDARD offset from GMT in minutes. Byte 6 bits 0-3 give whole hours and bit 4 makes it negative."
+          },
+          "daylightSaving": {
+            "type": "boolean",
+            "description": "Bit 7 of byte 6. When true the station's wall clock is one hour ahead of utcOffsetMinutes."
+          }
+        }
+      }
+    },
+    "daylightSavingChanges": {
+      "type": "array",
+      "description": "Daylight Saving Change commands: the two instants the station moves its clock. Sent about as often as the Time command and repeated unchanged, so the same pair usually appears many times - the array is what was broadcast, not a set.",
+      "items": {
+        "type": "object",
+        "required": [
+          "starts",
+          "ends"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "starts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When daylight saving begins, GMT. Bytes 2-5, a 32-bit big-endian minute count from 1992-01-01 GMT."
+          },
+          "ends": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When daylight saving ends, GMT. Bytes 6-9, same encoding. The April capture sends 1998-04-05 02:00 and 1998-10-25 01:00, the two US transitions of 1998."
+          }
+        }
+      }
+    }
+  }
+}

@@ -16,8 +16,10 @@ It is Huffman over 127 symbols, stored in the DLL as a 256 byte binary tree. Sym
 while a token is often several characters, and why reading it as a character code did
 not work. Kraft sum is exactly 1.
 
-Verified against the three 1998 captures: 11,029 of 11,031 compressed titles and 225 of
-231 descriptions decode cleanly, the failures all in the noisiest capture.
+Verified against the three 1998 captures: all 11,161 Show Title and all 233 Show
+Description commands decode cleanly, with nothing reported undecodable. Not every string
+is compressed - a title is sent in the clear when compressing it would make it longer,
+which is 36 of the April capture's 3,640.
 
 See docs/starsight.md. Public domain / Unlicense, as with the rest of ccDecoder.
 """
