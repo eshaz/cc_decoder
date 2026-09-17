@@ -87,6 +87,57 @@
    "provenance": "measured"
   }
  ],
+ "recovery": [
+  {
+   "damage": "nothing",
+   "unknownBits": "0",
+   "candidates": "1",
+   "checksumLeft": "32",
+   "outcome": "passes as it stands"
+  },
+  {
+   "damage": "bits the slicer doubted, 2 rising to 20",
+   "unknownBits": "2 - 20",
+   "candidates": "1",
+   "checksumLeft": "30 - 12",
+   "outcome": "solved as erasures"
+  },
+  {
+   "damage": "one lost VBI line",
+   "unknownBits": "16",
+   "candidates": "1",
+   "checksumLeft": "16",
+   "outcome": "solved as erasures"
+  },
+  {
+   "damage": "one flipped bit the slicer was sure of",
+   "unknownBits": "1",
+   "candidates": "2^10.6",
+   "checksumLeft": "21",
+   "outcome": "searched"
+  },
+  {
+   "damage": "two flipped bits",
+   "unknownBits": "2",
+   "candidates": "2^20.3",
+   "checksumLeft": "12",
+   "outcome": "searched"
+  },
+  {
+   "damage": "two lost VBI lines",
+   "unknownBits": "32",
+   "candidates": "1",
+   "checksumLeft": "0",
+   "outcome": "refused"
+  },
+  {
+   "damage": "damage the confidence did not point at",
+   "unknownBits": "-",
+   "candidates": "-",
+   "checksumLeft": "-",
+   "outcome": "refused"
+  }
+ ],
  "commands": [
   {
    "type": 0,
@@ -810,14 +861,39 @@
      "provenance": "loader"
     },
     {
-     "at": "6-9",
-     "field": "a 32 bit field",
+     "at": "5",
+     "field": "flags",
      "provenance": "loader"
     },
     {
-     "at": "10..",
-     "field": "the channels available in the region",
-     "provenance": "patent"
+     "at": "6-9",
+     "field": "effective from, same epoch as Time",
+     "provenance": "loader"
+    },
+    {
+     "at": "10",
+     "field": "channel count, so a lineup is at most 255",
+     "provenance": "loader"
+    },
+    {
+     "at": "11.. +0",
+     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7",
+     "provenance": "loader"
+    },
+    {
+     "at": "11.. +1",
+     "field": "channel id low 8 (15 bits with the byte before)",
+     "provenance": "loader"
+    },
+    {
+     "at": "11.. +2",
+     "field": "channel number low 8 (9 bits with the byte before)",
+     "provenance": "loader"
+    },
+    {
+     "at": "11.. +3",
+     "field": "never read by the loader",
+     "provenance": "loader"
     }
    ]
   },
@@ -858,12 +934,305 @@
     },
     {
      "at": "7",
-     "field": "which of bytes 8-15 are call letters",
+     "field": "which of bytes 8-15 make the short label",
      "provenance": "loader"
     },
     {
      "at": "8-15",
-     "field": "call letter candidates",
+     "field": "one string, CALL-NET: call letters, a dash, the network",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 9",
+   "type": 9,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "2-3",
+     "field": "an id",
+     "provenance": "loader"
+    },
+    {
+     "at": "4..",
+     "field": "payload, to the length in byte 1",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 10",
+   "type": 10,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0-8",
+     "field": "nine bytes the loader passes to the host application without reading them",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 31",
+   "type": 31,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "3-8",
+     "field": "a six byte key; the loader ignores the command unless it matches the one it holds",
+     "provenance": "loader"
+    },
+    {
+     "at": "10",
+     "field": "first table entry count",
+     "provenance": "loader"
+    },
+    {
+     "at": "11",
+     "field": "second table entry count",
+     "provenance": "loader"
+    },
+    {
+     "at": "12..",
+     "field": "that many two byte entries, then the second table, then two more bytes",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 36",
+   "type": 36,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "3",
+     "field": "high nibble: which part this is",
+     "provenance": "loader"
+    },
+    {
+     "at": "4",
+     "field": "which message the parts belong to",
+     "provenance": "loader"
+    },
+    {
+     "at": "5..",
+     "field": "that part of it",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 37",
+   "type": 37,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "3",
+     "field": "low nibble, a field",
+     "provenance": "loader"
+    },
+    {
+     "at": "4-5",
+     "field": "address count",
+     "provenance": "loader"
+    },
+    {
+     "at": "6..",
+     "field": "that many two byte addresses; the loader reads no further unless its own is among them",
+     "provenance": "loader"
+    },
+    {
+     "at": "after them",
+     "field": "the payload for the receivers named",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 38",
+   "type": 38,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "3-4",
+     "field": "an id",
+     "provenance": "loader"
+    },
+    {
+     "at": "5",
+     "field": "a byte the loader keeps",
+     "provenance": "loader"
+    },
+    {
+     "at": "6",
+     "field": "flags",
+     "provenance": "loader"
+    },
+    {
+     "at": "7",
+     "field": "low 3 bits: first length; upper bits: more flags",
+     "provenance": "loader"
+    },
+    {
+     "at": "8",
+     "field": "second length",
+     "provenance": "loader"
+    },
+    {
+     "at": "9",
+     "field": "third length",
+     "provenance": "loader"
+    },
+    {
+     "at": "10-11",
+     "field": "a second 16 bit value",
+     "provenance": "loader"
+    },
+    {
+     "at": "12..",
+     "field": "the three payloads, one after another",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 39",
+   "type": 39,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "3-4",
+     "field": "an id",
+     "provenance": "loader"
+    },
+    {
+     "at": "5-6",
+     "field": "a 16 bit value",
+     "provenance": "loader"
+    },
+    {
+     "at": "7-10",
+     "field": "a 32 bit value",
+     "provenance": "loader"
+    },
+    {
+     "at": "11",
+     "field": "a byte",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 40",
+   "type": 40,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "3-4",
+     "field": "an id",
+     "provenance": "loader"
+    },
+    {
+     "at": "5",
+     "field": "a byte the loader keeps",
+     "provenance": "loader"
+    },
+    {
+     "at": "6..",
+     "field": "payload, to the length in bytes 1-2",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "name": "type 42",
+   "type": 42,
+   "provenance": "loader",
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type",
+     "provenance": "loader"
+    },
+    {
+     "at": "1-2",
+     "field": "length",
+     "provenance": "loader"
+    },
+    {
+     "at": "8",
+     "field": "bits 4-5: set a flag, clear it, or neither",
      "provenance": "loader"
     }
    ]
@@ -1172,18 +1541,58 @@
      "provenance": "measured"
     },
     {
+     "at": "3",
+     "field": "which layout this is. The 1994 KCET capture sends 1 and the 1998 KET tapes send 3, and the fields after byte 20 sit in different places in each",
+     "provenance": "measured"
+    },
+    {
+     "at": "4-5",
+     "field": "a constant, 500 on KCET and 405 on KET",
+     "provenance": "measured"
+    },
+    {
+     "at": "6-7",
+     "field": "a constant, 5 on KCET and 52 on KET",
+     "provenance": "measured"
+    },
+    {
+     "at": "8-11",
+     "field": "a Unix time, constant within a capture and earlier than the one after it",
+     "provenance": "measured"
+    },
+    {
      "at": "12-15",
-     "field": "when the block was assembled, Unix seconds",
+     "field": "when the block was assembled, Unix seconds; constant within a capture",
      "provenance": "measured"
     },
     {
-     "at": "48-51",
-     "field": "the station's own clock, Unix seconds",
+     "at": "20-23",
+     "field": "0x12CEA600 in every instance of both stations, four years and a continent apart. Unexplained, and the only value in the block that is",
      "provenance": "measured"
     },
     {
-     "at": "the rest",
-     "field": "438 of 733 bytes are identical across every instance; what moves is two monotonic counters and what looks like a node bitmap",
+     "at": "varies",
+     "field": "the station clock at the moment of sending, Unix seconds. Not at a fixed offset - 48 in layout 3 and 58 in layout 1 - so it is found as the one field past the assembly time that reads as a time shortly after it",
+     "provenance": "measured"
+    },
+    {
+     "at": "38-39, 50-51, 40-41 (layout 1)",
+     "field": "how far through its cycle the station is: a total, how many are done and how many are left. They hold to the byte across all twelve instances of the 1994 capture - 487 in all, 33 more done every ten minutes - and no three fields anywhere in layout 3 hold the same identity, so they are read only when they agree",
+     "provenance": "measured"
+    },
+    {
+     "at": "66-67 (layout 1)",
+     "field": "the minutes between the assembly time and the clock. Exact on all twelve, and so carries nothing the other two fields do not",
+     "provenance": "measured"
+    },
+    {
+     "at": "the rest of layout 1",
+     "field": "zero. The block grows two bytes every instance and the added bytes are padding, so something is counted that this capture never fills in",
+     "provenance": "measured"
+    },
+    {
+     "at": "the rest of layout 3",
+     "field": "669 bytes, two thirds of them zero and 93 to 95 per cent of them identical from one instance to the next ten minutes later, in place - aligning the two at any other offset fits worse, so nothing slides. What does change is 7 to 9 per cent of it, in short runs which are most often pairs two bytes apart, so what is being updated is 16 bit fields scattered through a table that is otherwise static. Six instances over two captures is not enough to say what they count",
      "provenance": "measured"
     }
    ]
@@ -1567,8 +1976,19 @@
    "bits": [
     {
      "mask": 255,
-     "field": "call sign presence",
-     "note": "Read from 0x80 down, one bit per candidate byte at 8-15; the selected bytes are concatenated and padded to 4.",
+     "field": "short label",
+     "note": "Read from 0x80 down, one bit per character at 8-15; the selected characters make a 4 character label for a display too narrow for the whole call sign.",
+     "provenance": "loader"
+    }
+   ]
+  },
+  {
+   "byte": "Region byte 5",
+   "bits": [
+    {
+     "mask": 1,
+     "field": "applyNow",
+     "note": "Use this lineup at once. Otherwise the loader holds the command and replays it when the stream clock reaches the effective time.",
      "provenance": "loader"
     }
    ]

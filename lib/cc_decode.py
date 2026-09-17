@@ -60,8 +60,36 @@ from setproctitle import setproctitle
 from multiprocessing import current_process
 
 
-# 7.0, not Table 2's 6.5: see the template built in `precompute_sine_templates`
-PREAMBLE_RUN_IN_COUNT = 7.0
+PREAMBLE_RUN_IN_COUNT = 6.5
+
+# How wide one bit may be, as a fraction of the image width.
+MIN_CLOCK_FRACTION = 0.035
+MAX_CLOCK_FRACTION = 0.041
+
+# Everything well above the data's own bandwidth is noise. The bits are NRZ at the clock
+# rate, so their spectrum is a sinc whose first null is at the bit rate
+BAND_LIMIT_PASS = 1.0
+BAND_LIMIT_STOP = 1.5
+_BAND_LIMIT_MASKS = {}
+
+def band_limit(line):
+    """ The line with everything above the data's own bandwidth taken out """
+    width = len(line)
+    mask = _BAND_LIMIT_MASKS.get(width)
+
+    if mask is None:
+        bit = 1.0 / (0.5 * (MIN_CLOCK_FRACTION + MAX_CLOCK_FRACTION) * width)
+        stop = BAND_LIMIT_STOP * bit
+        start = BAND_LIMIT_PASS * bit
+
+        frequency = np.fft.rfftfreq(width)
+        mask = np.ones(len(frequency))
+        mask[frequency >= stop] = 0.0
+        shoulder = (frequency > start) & (frequency < stop)
+        mask[shoulder] = 0.5 * (1 + np.cos(np.pi * (frequency[shoulder] - start) / (stop - start)))
+        _BAND_LIMIT_MASKS[width] = mask
+
+    return np.fft.irfft(np.fft.rfft(line) * mask, width)
 START_BIT_ZEROS_COUNT = 2
 START_BIT_ONES_COUNT = 1
 START_BIT_COUNT = START_BIT_ZEROS_COUNT + START_BIT_ONES_COUNT
@@ -461,8 +489,8 @@ def decode_byte_pair(control, byte1, byte2, default_unicode=True):
 
 def precompute_sine_templates(image_width, preamble_run_in_count):
     # granularity of period width
-    min_clock_len = round(0.035 * image_width) # lower boundary for period width
-    max_clock_len = round(0.041 * image_width) # upper boundary for period width
+    min_clock_len = round(MIN_CLOCK_FRACTION * image_width) # lower boundary for period width
+    max_clock_len = round(MAX_CLOCK_FRACTION * image_width) # upper boundary for period width
     num_steps = 5 # fractional amount to search for pixel width
 
     steps = (max_clock_len - min_clock_len) * num_steps
@@ -480,9 +508,9 @@ def precompute_sine_templates(image_width, preamble_run_in_count):
             break
 
         template = np.concatenate((
-            np.sin(2 * np.pi * np.arange(run_len) / pixels_per_cycle - np.pi / 2), # run in
-            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), -1), #          0,0
-            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #             1
+            np.sin(2 * np.pi * np.arange(run_len) / pixels_per_cycle), #    clock run in
+            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), -1), # 0,0 at 0 IRE
+            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #    1
         ))
         template -= template.mean()
         var_t = np.sum(template ** 2)
@@ -510,7 +538,7 @@ def precompute_sine_templates(image_width, preamble_run_in_count):
 def sync_to_preamble(img, row):
     # synchronize to the clock run in sine wave as well as the three start bits
     # Read and normalize line
-    line = img[row]
+    line = band_limit(img[row])
 
     line_min, line_max = line.min(), line.max()
     if line_min == line_max:
@@ -585,6 +613,8 @@ def sync_to_preamble(img, row):
         "preamble_end": preamble_end,
         "bit_width": bit_width,
         "score": best_score,
+        "cumsum": cumsum,
+        "cumsum2": cumsum2,
     }
 
 def bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end):
@@ -604,20 +634,42 @@ def get_bit_value(bit_index, bit_width, bit_padding, normalized_line, normalized
     # top, and this runs about ninety thousand times a second
     return 1 if seg.sum() / seg.size > normalized_median else 0
 
-def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
-    """ `(bit, how unsettled the window was, how far it sat from the slicing level)`
+# How many times the slicing level is re-measured from the cells it has just decided, and
+# how many cells each level needs before its drift is worth fitting rather than assuming.
+LEVEL_FIT_PASSES = 2
+MIN_CELLS_PER_LEVEL = 3
 
-    The last of those is the margin the decision was taken on. It is what says which bits
-    to doubt when something downstream disagrees with the line.
+def _level_line(cells, high, side):
+    """ Where one of the two levels sits at each cell, as a straight line fitted to it
+
+    Least squares in closed form rather than `polyfit`, which would be called twice a pass
+    on every line of a capture and does not need to solve a general system to do it.
     """
-    seg = bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end)
-    mean = seg.sum() / seg.size
-    deviation = seg - mean
-    std = math.sqrt((deviation * deviation).sum() / deviation.size)
+    count = 0
+    sum_x = sum_y = 0.0
+    for index, value in enumerate(cells):
+        if high[index] is side:
+            count += 1
+            sum_x += index
+            sum_y += value
 
-    return 1 if mean > normalized_median else 0, std, abs(mean - normalized_median)
+    mean_x = sum_x / count
+    mean_y = sum_y / count
 
-def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot):
+    covariance = variance = 0.0
+    for index, value in enumerate(cells):
+        if high[index] is side:
+            offset = index - mean_x
+            covariance += offset * (value - mean_y)
+            variance += offset * offset
+
+    if variance == 0.0:
+        return [mean_y] * len(cells)
+
+    slope = covariance / variance
+    return [slope * (index - mean_x) + mean_y for index in range(len(cells))]
+
+def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot, cumsum, cumsum2):
     """ Slice the two data bytes out of a line
 
     Both bytes come back as the eight bits that were on the wire, low bit first, with
@@ -664,15 +716,62 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
     ):
         return None, None, 0, ()
 
-    bits = []
-    margins = []
+    # ---- SLICING LEVEL ----
+    #
+    # The run-in's own mean is only a first guess at where to slice. It is measured at the
+    # head of the line and then asked to hold for all nineteen cells after it, and on tape
+    # it does not: measured over the 1994 KCET capture the two data levels sit at -0.348
+    # and +0.318 about it, so their real midpoint is 0.015 below where the run-in puts it,
+    # and the eye closes from 0.675 at the middle of the line to 0.628 at the last bit.
+    #
+    # Both are correctable from the line itself, because every cell is a sample of one
+    # level or the other. Taking the cells apart by which side they fell and fitting a line
+    # through each gives the two levels where they actually are, and the midpoint of those
+    # is where to slice. Worth 107 packets to 115 on that capture; on both 1998 KET
+    # captures it changes nothing, 337 and 397 either way, because a clean line's levels do
+    # not move.
+    #
+    # The three start bits go into the fit on the same footing as the rest, by which side
+    # they fell, rather than being pinned to the 0, 0, 1 they are known to be. Pinning them
+    # measures identically - 140 packets and the same captions either way - because the
+    # assertion above has already settled the only two that could have gone the other way.
+    # Each cell's mean and spread is two subtractions off the prefix sums, so the whole
+    # line is read once rather than once per cell. Nineteen cells of a dozen samples is
+    # far too little data to hand to numpy a cell at a time - the call overhead is worth
+    # more than the arithmetic - so the fitting below is plain Python over plain floats.
+    limit = len(normalized_line)
+    cells = []
+    spreads = []
+    for index in range(START_BIT_COUNT + DATA_BIT_COUNT):
+        start = preamble_end + index * bit_width
+        first = round(start) + bit_padding
+        last = round(start + bit_width) - bit_padding
+        if first < 0 or last > limit or last <= first:
+            return None, None, 0, ()
+        width = last - first
+        # native floats from here on: these are scalars, and numpy's are several times
+        # dearer to add and compare than Python's own
+        mean = float(cumsum[last] - cumsum[first]) / width
+        cells.append(mean)
+        spreads.append(float(cumsum2[last] - cumsum2[first]) / width - mean * mean)
+
+    threshold = [float(normalized_median)] * len(cells)
+    for _ in range(LEVEL_FIT_PASSES):
+        high = [value > level for value, level in zip(cells, threshold)]
+        if high.count(True) < MIN_CELLS_PER_LEVEL or high.count(False) < MIN_CELLS_PER_LEVEL:
+            break
+        low_line = _level_line(cells, high, False)
+        high_line = _level_line(cells, high, True)
+        threshold = [0.5 * (a + b) for a, b in zip(low_line, high_line)]
+
+    margins = [abs(value - level)
+               for value, level in zip(cells[START_BIT_COUNT:], threshold[START_BIT_COUNT:])]
+    bits = [1 if value > level else 0
+            for value, level in zip(cells[START_BIT_COUNT:], threshold[START_BIT_COUNT:])]
+
     noisy = 0
-    for bit_index in range(DATA_BIT_COUNT):
-        bit, std, margin = get_bit(bit_index + START_BIT_COUNT, bit_width, bit_padding,
-                                   normalized_line, normalized_median, preamble_end)
-        bits.append(bit)
-        margins.append(margin)
-        if std > MIN_STD_DEV_FOR_CORRECTION:
+    for bit_index, variance in enumerate(spreads[START_BIT_COUNT:]):
+        if variance > MIN_STD_DEV_FOR_CORRECTION * MIN_STD_DEV_FOR_CORRECTION:
             noisy |= 1 << bit_index
 
     # Scale by this line's own typical margin rather than a fixed level, so the number
@@ -811,6 +910,8 @@ def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_p
                 preamble_match["bit_width"],
                 preamble_match["score"],
                 debug_plot,
+                preamble_match["cumsum"],
+                preamble_match["cumsum2"],
             )
 
             rows_found.append((start_idx, byte1, byte2, noisy, confidence))

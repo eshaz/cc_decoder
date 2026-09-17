@@ -67,6 +67,20 @@ s.patent{background:var(--patent-bg);color:var(--patent-ink)}
 <tr><td>header check</td><td>crc32(bytes 0..8) &amp; 0xFFFF == bytes 9-10 read little endian</td><td><s class="measured">measured</s></td></tr>
 <tr><td>body check</td><td>crc32(the whole packet, its own trailer included) == 0</td><td><s class="measured">measured</s></td></tr>
 </tbody></table>
+<h2 id='recovery'>Recovering a damaged packet</h2>
+<p>The body checksum is not only a test. A CRC is linear over GF(2), so its thirty-two bits are thirty-two equations in the bits of the packet, and where the damage sits in a known place the lost bits can be solved for rather than guessed. What makes that worth doing is the shape of the damage. Measured over the 1994 KCET capture, the slicer decides a bit with about 6.8 sigma of margin, which on ordinary noise would be one error in 10^15; the real rate is nearer one in a thousand. The errors are not noise at all. They are rare dropouts that destroy a few bits outright - 0.2 to 0.9 per cent of bits land inside half the eye, where noise alone would put 0.005 per cent - and a packet spans about a hundred fields, so most packets meet one.</p>
+<p>That is what makes them recoverable. A dropout leaves its mark on the bits the slicer decided by the narrowest margin, so those positions are already known and only their values are in doubt. A bit like that is an <i>erasure</i>, and an erasure costs one bit of the checksum where a flipped bit of unknown position costs about eleven, because its position has to be searched as well and every candidate tried is a chance to checksum by coincidence.</p>
+<p>How many erasures a packet needs is a property of that packet, so the budget is not fixed: the two least confident bits are tried first and the set widens only while the checksum refuses it. <b>Left over</b> below is the bits of checksum still unspent, which is what the answer is verified with. On the 1994 KCET capture half of all repairs are done with four erased bits or fewer and the mean is 6.1, so 25.9 bits are typically held back rather than the 12 that going straight to the ceiling would leave - the odds of a coincidence fall from one in 4,000 to one in 60 million. Whatever comes back must also tile into commands, which no arithmetic here can fake, and a candidate that does not tile is a reason to spend more of the budget rather than to give up.</p>
+<table><thead><tr><th>Damage</th><th>Unknown bits</th><th>Candidates</th><th>Left over</th><th>Outcome</th></tr></thead><tbody>
+<tr><td>nothing</td><td>0</td><td>1</td><td>32</td><td>passes as it stands</td></tr>
+<tr><td>bits the slicer doubted, 2 rising to 20</td><td>2 - 20</td><td>1</td><td>30 - 12</td><td>solved as erasures</td></tr>
+<tr><td>one lost VBI line</td><td>16</td><td>1</td><td>16</td><td>solved as erasures</td></tr>
+<tr><td>one flipped bit the slicer was sure of</td><td>1</td><td>2^10.6</td><td>21</td><td>searched</td></tr>
+<tr><td>two flipped bits</td><td>2</td><td>2^20.3</td><td>12</td><td>searched</td></tr>
+<tr><td>two lost VBI lines</td><td>32</td><td>1</td><td>0</td><td>refused</td></tr>
+<tr><td>damage the confidence did not point at</td><td>-</td><td>-</td><td>-</td><td>refused</td></tr>
+</tbody></table>
+<p>Measured on that capture: of 173 packets the sequence numbers say were sent, 154 were found, 19 passed the body checksum outright and 140 do once repaired. Three things corroborate them, none of which the repair constrains. The recovered sequence numbers rise in step across the whole capture. The recovered Time command puts the station eight hours behind GMT, which is Los Angeles. And solving the same packets with the budget fixed at the ceiling instead of escalating returns byte for byte the same answers - two different routes to the same packet.</p>
 <h2 id='commands'>Commands</h2>
 <p>Indexed by <code>byte 0 &amp; 0x3F</code>. <b>Length</b> is how wide the length field after the type is and <b>header</b> where the variable part starts, both from the loader's own descriptor table. <b>Loader</b> is what <code>SSLOAD.DLL</code> does with the type: run its own code, accept it without acting, or nothing. <b>Seen</b> means a capture has carried one.</p>
 <table><thead><tr><th>Type</th><th>Name</th><th>Length</th><th>Header</th><th>Loader</th><th>Decoded</th><th>Seen</th><th>Source</th></tr></thead><tbody>
@@ -157,8 +171,13 @@ s.patent{background:var(--patent-bg);color:var(--patent-ink)}
 <tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
 <tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
 <tr><td>3-4</td><td>region id</td><td><s class="loader">loader</s></td></tr>
-<tr><td>6-9</td><td>a 32 bit field</td><td><s class="loader">loader</s></td></tr>
-<tr><td>10..</td><td>the channels available in the region</td><td><s class="patent">patent</s></td></tr>
+<tr><td>5</td><td>flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6-9</td><td>effective from, same epoch as Time</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10</td><td>channel count, so a lineup is at most 255</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +0</td><td>bit 7: channel number bit 8; bits 0-6: channel id high 7</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +1</td><td>channel id low 8 (15 bits with the byte before)</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +2</td><td>channel number low 8 (9 bits with the byte before)</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +3</td><td>never read by the loader</td><td><s class="loader">loader</s></td></tr>
 </tbody></table>
 <h3>Channel Data &mdash; type 4 <s class="loader">loader</s></h3>
 <table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
@@ -168,8 +187,81 @@ s.patent{background:var(--patent-bg);color:var(--patent-ink)}
 <tr><td>4</td><td>channel id low 8 (15 bits with byte 3)</td><td><s class="loader">loader</s></td></tr>
 <tr><td>5</td><td>flags</td><td><s class="loader">loader</s></td></tr>
 <tr><td>6</td><td>channel number low 8 (9 bits with byte 3)</td><td><s class="loader">loader</s></td></tr>
-<tr><td>7</td><td>which of bytes 8-15 are call letters</td><td><s class="loader">loader</s></td></tr>
-<tr><td>8-15</td><td>call letter candidates</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7</td><td>which of bytes 8-15 make the short label</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8-15</td><td>one string, CALL-NET: call letters, a dash, the network</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 9 &mdash; type 9 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>2-3</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4..</td><td>payload, to the length in byte 1</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 10 &mdash; type 10 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0-8</td><td>nine bytes the loader passes to the host application without reading them</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 31 &mdash; type 31 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-8</td><td>a six byte key; the loader ignores the command unless it matches the one it holds</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10</td><td>first table entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11</td><td>second table entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>12..</td><td>that many two byte entries, then the second table, then two more bytes</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 36 &mdash; type 36 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>high nibble: which part this is</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4</td><td>which message the parts belong to</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5..</td><td>that part of it</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 37 &mdash; type 37 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>low nibble, a field</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4-5</td><td>address count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6..</td><td>that many two byte addresses; the loader reads no further unless its own is among them</td><td><s class="loader">loader</s></td></tr>
+<tr><td>after them</td><td>the payload for the receivers named</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 38 &mdash; type 38 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5</td><td>a byte the loader keeps</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6</td><td>flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7</td><td>low 3 bits: first length; upper bits: more flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8</td><td>second length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>9</td><td>third length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10-11</td><td>a second 16 bit value</td><td><s class="loader">loader</s></td></tr>
+<tr><td>12..</td><td>the three payloads, one after another</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 39 &mdash; type 39 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5-6</td><td>a 16 bit value</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7-10</td><td>a 32 bit value</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 40 &mdash; type 40 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5</td><td>a byte the loader keeps</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6..</td><td>payload, to the length in bytes 1-2</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 42 &mdash; type 42 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8</td><td>bits 4-5: set a flag, clear it, or neither</td><td><s class="loader">loader</s></td></tr>
 </tbody></table>
 <h3>Show List &mdash; type 5 <s class="measured">measured</s></h3>
 <table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
@@ -247,9 +339,17 @@ s.patent{background:var(--patent-bg);color:var(--patent-ink)}
 <table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
 <tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
 <tr><td>1-2</td><td>length, always 733</td><td><s class="measured">measured</s></td></tr>
-<tr><td>12-15</td><td>when the block was assembled, Unix seconds</td><td><s class="measured">measured</s></td></tr>
-<tr><td>48-51</td><td>the station&#x27;s own clock, Unix seconds</td><td><s class="measured">measured</s></td></tr>
-<tr><td>the rest</td><td>438 of 733 bytes are identical across every instance; what moves is two monotonic counters and what looks like a node bitmap</td><td><s class="measured">measured</s></td></tr>
+<tr><td>3</td><td>which layout this is. The 1994 KCET capture sends 1 and the 1998 KET tapes send 3, and the fields after byte 20 sit in different places in each</td><td><s class="measured">measured</s></td></tr>
+<tr><td>4-5</td><td>a constant, 500 on KCET and 405 on KET</td><td><s class="measured">measured</s></td></tr>
+<tr><td>6-7</td><td>a constant, 5 on KCET and 52 on KET</td><td><s class="measured">measured</s></td></tr>
+<tr><td>8-11</td><td>a Unix time, constant within a capture and earlier than the one after it</td><td><s class="measured">measured</s></td></tr>
+<tr><td>12-15</td><td>when the block was assembled, Unix seconds; constant within a capture</td><td><s class="measured">measured</s></td></tr>
+<tr><td>20-23</td><td>0x12CEA600 in every instance of both stations, four years and a continent apart. Unexplained, and the only value in the block that is</td><td><s class="measured">measured</s></td></tr>
+<tr><td>varies</td><td>the station clock at the moment of sending, Unix seconds. Not at a fixed offset - 48 in layout 3 and 58 in layout 1 - so it is found as the one field past the assembly time that reads as a time shortly after it</td><td><s class="measured">measured</s></td></tr>
+<tr><td>38-39, 50-51, 40-41 (layout 1)</td><td>how far through its cycle the station is: a total, how many are done and how many are left. They hold to the byte across all twelve instances of the 1994 capture - 487 in all, 33 more done every ten minutes - and no three fields anywhere in layout 3 hold the same identity, so they are read only when they agree</td><td><s class="measured">measured</s></td></tr>
+<tr><td>66-67 (layout 1)</td><td>the minutes between the assembly time and the clock. Exact on all twelve, and so carries nothing the other two fields do not</td><td><s class="measured">measured</s></td></tr>
+<tr><td>the rest of layout 1</td><td>zero. The block grows two bytes every instance and the added bytes are padding, so something is counted that this capture never fills in</td><td><s class="measured">measured</s></td></tr>
+<tr><td>the rest of layout 3</td><td>669 bytes, two thirds of them zero and 93 to 95 per cent of them identical from one instance to the next ten minutes later, in place - aligning the two at any other offset fits worse, so nothing slides. What does change is 7 to 9 per cent of it, in short runs which are most often pairs two bytes apart, so what is being updated is 16 bit fields scattered through a table that is otherwise static. Six instances over two captures is not enough to say what they count</td><td><s class="measured">measured</s></td></tr>
 </tbody></table>
 <h3>type 31 &mdash; type 31 <s class="loader">loader</s></h3>
 <table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
@@ -349,7 +449,11 @@ s.patent{background:var(--patent-bg);color:var(--patent-ink)}
 </tbody></table>
 <h3>Channel Data byte 7</h3>
 <table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
-<tr><td>0xFF</td><td>call sign presence</td><td>Read from 0x80 down, one bit per candidate byte at 8-15; the selected bytes are concatenated and padded to 4.</td><td><s class="loader">loader</s></td></tr>
+<tr><td>0xFF</td><td>short label</td><td>Read from 0x80 down, one bit per character at 8-15; the selected characters make a 4 character label for a display too narrow for the whole call sign.</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Region byte 5</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x01</td><td>applyNow</td><td>Use this lineup at once. Otherwise the loader holds the command and replays it when the stream clock reaches the effective time.</td><td><s class="loader">loader</s></td></tr>
 </tbody></table>
 <h3>Subscriber Reset byte 2</h3>
 <table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
@@ -514,7 +618,8 @@ s.patent{background:var(--patent-bg);color:var(--patent-ink)}
 <table><thead><tr><th>What</th><th>Where it stands</th></tr></thead><tbody>
 <tr><td>Show List byte 3, low nibble</td><td>Ten distinct values, one per channel-day. The loader stores it at header offset 0xC and nothing reads it back; it correlates with neither slot count, description count nor command length.</td></tr>
 <tr><td>Station Node Status, 295 of 733 bytes</td><td>Two monotonic counters and what looks like a node bitmap. Seven instances across three tapes is not enough to name fields from.</td></tr>
-<tr><td>Types 9, 10, 31, 36-40, 42</td><td>The loader runs code for them and neither the patents nor any capture says what they carry. Framed and counted here, not interpreted.</td></tr>
-<tr><td>Region and Channel Data payloads</td><td>The fixed headers are read; what follows is a channel list the loader walks with a routine this has not yet followed.</td></tr>
+<tr><td>What types 9, 10, 31, 36-40 and 42 are for</td><td>Their layouts are read off the loader and are in the table above; what they mean is not. They gate each other through two bytes the loader keeps - 31 advances a state, 9 waits for it, 42 sets a flag, 36 and 37 wait for that - so they are one sequence a receiver is walked through rather than nine messages. The first step is addressed by a six byte key the receiver must already hold, which is reason enough for no capture to carry any of them.</td></tr>
+<tr><td>The fourth byte of a Region lineup entry</td><td>Three of the four carry the channel id and its number. The loader never reads the fourth.</td></tr>
+<tr><td>Which network names the loader knows</td><td>Channel Data gives the network as text after a dash, and the loader looks that text up in a table to store an id. The table itself is in dbsets.dll, not read here, so the name is carried through as it was sent.</td></tr>
 </tbody></table>
 </main></body></html>

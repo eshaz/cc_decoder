@@ -125,6 +125,18 @@ COMMAND_SUBSCRIBER_RESET = 13
 COMMAND_SEQUENCE_NUMBER = 20
 COMMAND_STATION_NODE_STATUS = 21
 
+# The nine the loader runs code for that no capture carries. Numbered rather than named:
+# see the decoders further down for what each is read as and why none of them has a name.
+COMMAND_IDENTIFIED_PAYLOAD = 9
+COMMAND_OPAQUE_NOTIFICATION = 10
+COMMAND_MATCHED_KEY = 31
+COMMAND_SEGMENTED = 36
+COMMAND_ADDRESSED = 37
+COMMAND_KEYED_RECORD = 38
+COMMAND_TIMED_RECORD = 39
+COMMAND_SIZED_PAYLOAD = 40
+COMMAND_GATE = 42
+
 COMMAND_NAMES = {
     1: 'Time',              2: 'Daylight Saving Change', 3: 'Region',
     4: 'Channel Data',      5: 'Show List',              6: 'Show Title',
@@ -685,10 +697,25 @@ def decode_time(command):
 # below are the ones the captures actually pin down, and they are all **Unix** seconds,
 # which no other part of this format uses: everything else counts minutes from 1992-01-01.
 STATION_ASSEMBLED = 12
-STATION_CLOCK = 48
+# The running clock is not at a fixed offset. Both stations put the assembly time at 12,
+# but KET's 733 byte form carries the clock at 48 and KCET's - which is 74 bytes and grows
+# by two every ten minutes - carries it at 58. So it is found rather than indexed: it is
+# the only field past the assembly time that reads as a time shortly after it. Measured
+# over all fifteen instances of both stations, that leaves exactly one candidate each, at
+# a window of one day, seven or thirty alike.
+STATION_CLOCK_WINDOW = 7 * 24 * 60 * 60
 STATION_EPOCH = datetime.datetime(1970, 1, 1)
 
-StationNode = namedtuple('StationNode', 'assembled clock')
+# What a Station Node Status block says, as far as it has been read. `version` is byte 3
+# and decides the layout: the 1994 KCET capture sends 1 and the 1998 KET tapes send 3.
+STATION_VERSION = 3
+STATION_BUILT = 8
+STATION_TOTAL = 38
+STATION_REMAINING = 40
+STATION_DONE = 50
+
+StationNode = namedtuple('StationNode',
+                         'version built assembled clock total done remaining')
 
 def decode_station_node(command):
     """ `(assembled, clock)` from a Station Node Status command, or None if it is short
@@ -701,10 +728,29 @@ def decode_station_node(command):
     seven instances is not enough to name fields from and SSLOAD.DLL does not read this
     command at all.
     """
-    if len(command) <= STATION_CLOCK + 4:
+    if len(command) <= STATION_DONE + 2:
         return None
-    return StationNode(STATION_EPOCH + datetime.timedelta(seconds=_u32(command, STATION_ASSEMBLED)),
-                       STATION_EPOCH + datetime.timedelta(seconds=_u32(command, STATION_CLOCK)))
+    assembled = _u32(command, STATION_ASSEMBLED)
+
+    found = [_u32(command, offset)
+             for offset in range(STATION_ASSEMBLED + 4, len(command) - 3)
+             if assembled <= _u32(command, offset) <= assembled + STATION_CLOCK_WINDOW]
+    clock = (STATION_EPOCH + datetime.timedelta(seconds=found[0])
+             if len(found) == 1 else None)
+
+    # How far through its cycle the station is. Read only when the three agree, which is
+    # the whole of the evidence for them: on the 1994 capture they hold to the byte across
+    # all twelve instances, 487 all told and 33 more of them done every ten minutes, and on
+    # the 1998 tapes no three fields anywhere in the block hold the identity at all.
+    total, done, remaining = (_u16(command, STATION_TOTAL), _u16(command, STATION_DONE),
+                              _u16(command, STATION_REMAINING))
+    if done + remaining != total or not total:
+        total = done = remaining = None
+
+    return StationNode(command[STATION_VERSION],
+                       STATION_EPOCH + datetime.timedelta(seconds=_u32(command, STATION_BUILT)),
+                       STATION_EPOCH + datetime.timedelta(seconds=assembled),
+                       clock, total, done, remaining)
 
 # Channel Data, type 4. The call sign is not stored as a string: byte 7 is a presence
 # mask, taken from the top bit down, saying which of the eight bytes at 8-15 are really
@@ -712,32 +758,48 @@ def decode_station_node(command):
 CHANNEL_NUMBER_HIGH_BIT = 0x80
 CHANNEL_CALL_SIGN_AT = 8
 CHANNEL_CALL_SIGN_BYTES = 8
-CHANNEL_CALL_SIGN_WIDTH = 4
+CHANNEL_LABEL_WIDTH = 4
 CHANNEL_SHOWS_CALL_SIGN = 0x02
+# The loader splits the eight characters on the first '-' and will only do so from the
+# fourth character on, so a call sign is never shorter than three.
+CHANNEL_NETWORK_MIN_CALL = 3
 
-ChannelData = namedtuple('ChannelData', 'channel number call_sign shows_call_sign')
+ChannelData = namedtuple('ChannelData', 'channel number call_sign network label shows_call_sign')
 
 def decode_channel_data(command):
-    """ `(channel, number, call sign, shows call sign)` from a Channel Data command
+    """ `(channel, number, call sign, network, label, shows call sign)`
 
-    The command this format needs and no capture contains: it binds a Show List's bare
-    channel id to a tuning position and a set of call letters. Everything here is read
-    from SSLOAD.DLL's type 4 handler and **nothing confirms it against a broadcast**,
-    because the command rides a carousel slow enough that no half hour window caught one.
+    What names a channel. It does not create one: SSLOAD.DLL's type 4 handler looks the id
+    up among the channels a Region command already established and returns without doing
+    anything if it is not there, so this only ever decorates a lineup.
+
+    The eight characters are one string of the form `CALL-NET`. The loader builds it whole,
+    finds the first dash, and splits it - the left becomes the station's call letters and
+    the right is looked up in a table of network names - which is why the network is read
+    here rather than the call sign being taken to be all eight. Byte 7 separately picks
+    four of the eight as a short label, for a display too narrow for the whole of it.
+
+    Read from the loader and **unconfirmed against a broadcast**: the command rides a
+    carousel slow enough that no capture here caught one.
     """
     if len(command) < CHANNEL_CALL_SIGN_AT + CHANNEL_CALL_SIGN_BYTES:
         return None
     channel = ((command[3] & 0x7F) << 8) | command[4]
     number = command[6] | (0x100 if command[3] & CHANNEL_NUMBER_HIGH_BIT else 0)
 
-    present = command[7]
-    letters = ''
-    for index in range(CHANNEL_CALL_SIGN_BYTES):
-        if present & (0x80 >> index):
-            letters += chr(command[CHANNEL_CALL_SIGN_AT + index])
-    call_sign = letters[:CHANNEL_CALL_SIGN_WIDTH].ljust(CHANNEL_CALL_SIGN_WIDTH).rstrip()
+    characters = command[CHANNEL_CALL_SIGN_AT:CHANNEL_CALL_SIGN_AT + CHANNEL_CALL_SIGN_BYTES]
+    text = bytes(characters).split(b'\x00')[0].decode('ascii', 'replace').rstrip()
+    dash = text.find('-')
+    if dash >= CHANNEL_NETWORK_MIN_CALL:
+        call_sign, network = text[:dash], text[dash + 1:]
+    else:
+        call_sign, network = text, ''
 
-    return ChannelData(channel, number, call_sign,
+    present = command[7]
+    label = ''.join(chr(characters[index]) for index in range(CHANNEL_CALL_SIGN_BYTES)
+                    if present & (0x80 >> index))[:CHANNEL_LABEL_WIDTH].rstrip()
+
+    return ChannelData(channel, number, call_sign, network, label,
                        bool(command[5] & CHANNEL_SHOWS_CALL_SIGN))
 
 # Theme Category and Theme Sub-Category, types 11 and 12. Both carry a version byte that
@@ -769,20 +831,231 @@ def decode_theme_names(command):
         offset += THEME_ENTRY_HEADER + length
     return version, entries
 
-RegionData = namedtuple('RegionData', 'region value')
+# A Region command's own header, then four bytes per channel in its lineup.
+REGION_APPLY_NOW = 0x01
+REGION_COUNT_AT = 10
+REGION_ENTRIES_AT = 11
+REGION_ENTRY_BYTES = 4
+
+RegionData = namedtuple('RegionData', 'region immediate effective channels')
 
 def decode_region(command):
-    """ `(region id, a 32 bit field)` from a Region command
+    """ `(region id, apply now, effective from, [(channel id, channel number)])`
 
-    The patents describe this as the command that names every channel a receiver in one
-    territory can see, sent once per region, and say a Subscriber Unit learns its region id
-    from an Authorization command before it can use any Channel Data. SSLOAD.DLL's type 3
-    handler reads the two fields below out of a ten byte header; what follows them is a
-    list this cannot yet name. Unconfirmed against a broadcast.
+    The lineup. This is the command that says which channels a receiver in one territory
+    can see and what number each sits on, and it is the only thing that binds a Show List's
+    bare channel id to anything a viewer would recognise - Channel Data merely decorates
+    what this has already established.
+
+    A receiver keeps its own region id and ignores any command that does not match it.
+    SSLOAD.DLL reads that id from the registry, where Windows 98 ships it as zero, so it is
+    learned from the air rather than from the postcode the installer also stores.
+
+    The lineup may be sent long before it applies: unless byte 5 says to apply it now, the
+    loader stores the command whole and replays it through the dispatcher when the stream's
+    own clock reaches `effective`. A lineup is merged rather than substituted, so a channel
+    in both keeps the call letters it was already given and one absent from the new lineup
+    is dropped. The count is a single byte, which caps a lineup at 255 channels.
+
+    Read from SSLOAD.DLL's type 3 handler and its entry parser, and **unconfirmed against a
+    broadcast** - no capture here carries one, which is why 202 Kentucky channels and 21
+    from Los Angeles are still bare numbers.
     """
-    if len(command) < 10:
+    if len(command) < REGION_ENTRIES_AT:
         return None
-    return RegionData(_u16(command, 3), _u32(command, 6))
+
+    channels = []
+    offset = REGION_ENTRIES_AT
+    for _ in range(command[REGION_COUNT_AT]):
+        if offset + REGION_ENTRY_BYTES > len(command):
+            break
+        # the same fields in the same bits as Channel Data, one byte tighter: fifteen bits
+        # of channel id, and a ninth bit of channel number carried at the top of the first
+        channels.append((
+            ((command[offset] & 0x7F) << 8) | command[offset + 1],
+            command[offset + 2] | (0x100 if command[offset] & CHANNEL_NUMBER_HIGH_BIT else 0),
+        ))
+        offset += REGION_ENTRY_BYTES
+
+    return RegionData(_u16(command, 3), bool(command[5] & REGION_APPLY_NOW),
+                      starsight_time(_u32(command, 6)), channels)
+
+# --- the nine types the loader runs code for and no capture carries ------------------
+#
+# What follows is the structure SSLOAD.DLL reads out of each, and not what any of it means.
+# They are named by number for that reason: nothing here is confirmed against a broadcast,
+# and the patents describe none of them.
+#
+# They are not nine independent messages. The loader keeps a state byte (image offset
+# 0x1AB00) and a flag byte (0x1AB34), and they gate each other: type 31 advances the state
+# to 2 when its key matches, type 9 acts only in state 2, type 42 sets or clears the flag,
+# and types 36 and 37 act only in state 3 with that flag set. So this is a sequence a
+# receiver is walked through, which is consistent with a capture of half an hour catching
+# none of it - the first step is addressed to one receiver by a key it has to already know.
+
+TypedPayload = namedtuple('TypedPayload', 'identifier payload')
+AddressedCommand = namedtuple('AddressedCommand', 'nibble addresses payload')
+KeyedRecord = namedtuple('KeyedRecord', 'identifier flags parts')
+TimedRecord = namedtuple('TimedRecord', 'identifier value when trailer')
+MatchedKey = namedtuple('MatchedKey', 'key first second trailer')
+
+def decode_identified_payload(command):
+    """ `(id, payload)` from a type 9 command
+
+    Byte 1 is the length, bytes 2-3 an id, and the rest is handed on whole. The loader will
+    not look at one at all until a type 31 command has advanced its state, which is why
+    this is gated rather than simply rare.
+    """
+    if len(command) < 4 or command[1] < 4:
+        return None
+    return TypedPayload(_u16(command, 2), bytes(command[4:command[1]]))
+
+def decode_opaque_notification(command):
+    """ The nine bytes a type 10 command carries
+
+    The loader does not parse them. It passes the command to whatever callback the host
+    application registered, tagged with its own type, and that is all - so the meaning
+    lives in the application and not in the format.
+    """
+    return bytes(command[:9]) if len(command) >= 9 else None
+
+def decode_matched_key(command):
+    """ `(key, first table, second table, trailer)` from a type 31 command
+
+    Bytes 3-8 are a six byte key which the loader compares against one it already holds and
+    ignores the command unless they are equal - so this is addressed to a single receiver.
+    What follows are two tables of two byte entries, counted by bytes 10 and 11, and two
+    bytes after them. A command that matches advances the loader's state, which is what
+    lets a type 9 command through.
+    """
+    if len(command) < 12:
+        return None
+    first_count, second_count = command[10], command[11]
+    at = 12
+    first = [_u16(command, at + i * 2) for i in range(first_count)
+             if at + i * 2 + 2 <= len(command)]
+    at += first_count * 2
+    second = [_u16(command, at + i * 2) for i in range(second_count)
+              if at + i * 2 + 2 <= len(command)]
+    at += second_count * 2
+    return MatchedKey(bytes(command[3:9]), first, second, bytes(command[at:at + 2]))
+
+def decode_segmented(command):
+    """ `(id, payload)` from a type 36 command, which arrives in parts
+
+    Byte 4 numbers the message and the high nibble of byte 3 the part. The loader holds a
+    partial message and abandons it when byte 4 changes, so the parts of one message have
+    to arrive together and in order.
+    """
+    if len(command) < 5:
+        return None
+    return TypedPayload(command[4], bytes(command[5:]))
+
+def decode_addressed(command):
+    """ `(nibble, addresses, payload)` from a type 37 command
+
+    Bytes 4-5 count a table of two byte addresses that starts at byte 6, and the loader
+    reads no further unless its own address is in that table. Everything after the table is
+    for the receivers it names. The low nibble of byte 3 is carried alongside.
+    """
+    if len(command) < 6:
+        return None
+    count = _u16(command, 4)
+    at = 6 + count * 2
+    if at > len(command):
+        return None
+    return AddressedCommand(command[3] & 0x0F,
+                            [_u16(command, 6 + i * 2) for i in range(count)],
+                            bytes(command[at:]))
+
+def decode_keyed_record(command):
+    """ `(id, flags, three payloads)` from a type 38 command
+
+    Bytes 3-4 are an id and bytes 10-11 a second sixteen bit value. Three lengths follow
+    one another - the low three bits of byte 7, then byte 8, then byte 9 - and the three
+    payloads they measure run one after another from byte 12. Byte 6 and the top bits of
+    byte 7 are flags, which the loader repacks into one byte rather than storing as sent.
+    """
+    if len(command) < 12:
+        return None
+    lengths = (command[7] & 0x07, command[8], command[9])
+    parts = []
+    at = 12
+    for length in lengths:
+        parts.append(bytes(command[at:at + length]))
+        at += length
+    return KeyedRecord(_u16(command, 3), (command[5], command[6], command[7]), parts)
+
+def decode_timed_record(command):
+    """ `(id, value, when, trailer)` from a type 39 command
+
+    Bytes 3-4 are an id, 5-6 a sixteen bit value, 7-10 a thirty-two bit one and 11 a single
+    byte. The loader packs the four into a structure and passes it on. Nothing says the
+    thirty-two bit field is a time; it is the same width and byte order as the ones that
+    are, and is left as a number here rather than being read as one.
+    """
+    if len(command) < 12:
+        return None
+    return TimedRecord(_u16(command, 3), _u16(command, 5), _u32(command, 7), command[11])
+
+def decode_sized_payload(command):
+    """ `(id, payload)` from a type 40 command
+
+    Bytes 1-2 are the length, 3-4 an id and 5 a byte the loader keeps beside it. The rest
+    of the command, six bytes in from the front, is stored whole.
+    """
+    if len(command) < 6:
+        return None
+    return TypedPayload(_u16(command, 3), bytes(command[6:_u16(command, 1)]))
+
+def _summarise_parts(record):
+    return 'id %-6d flags %s parts %s' % (
+        record.identifier, ' '.join('%02x' % f for f in record.flags),
+        ' '.join(str(len(part)) for part in record.parts))
+
+# Bits 4-5 of byte 8 of a type 42 command. The loader sets a flag for 0, clears it for 1
+# and ignores the command for 2 and 3; types 36 and 37 do nothing while that flag is clear.
+TYPE_42_SETTING = 0x30
+TYPE_42_SETTING_SHIFT = 4
+
+def decode_gate(command):
+    """ Whether a type 42 command turns its flag on, off, or neither
+
+    Two bits, and the loader acts on only two of their four values.
+    """
+    if len(command) < 9:
+        return None
+    setting = (command[8] & TYPE_42_SETTING) >> TYPE_42_SETTING_SHIFT
+    return {0: True, 1: False}.get(setting)
+
+# Each of the nine, with a one line summary for the log. Kept together so the dispatch is
+# one lookup rather than nine branches that would all say the same thing.
+UNNAMED_DECODERS = {
+    COMMAND_IDENTIFIED_PAYLOAD: (decode_identified_payload,
+                                 lambda d: 'id %-6d %d byte%s' % (
+                                     d.identifier, len(d.payload),
+                                     '' if len(d.payload) == 1 else 's')),
+    COMMAND_OPAQUE_NOTIFICATION: (decode_opaque_notification,
+                                  lambda d: 'for the application, %s' % d.hex()),
+    COMMAND_MATCHED_KEY: (decode_matched_key,
+                          lambda d: 'key %s, %d and %d entries' % (
+                              d.key.hex(), len(d.first), len(d.second))),
+    COMMAND_SEGMENTED: (decode_segmented,
+                        lambda d: 'message %-4d %d bytes' % (d.identifier, len(d.payload))),
+    COMMAND_ADDRESSED: (decode_addressed,
+                        lambda d: '%d address%s, %d bytes for them' % (
+                            len(d.addresses), '' if len(d.addresses) == 1 else 'es',
+                            len(d.payload))),
+    COMMAND_KEYED_RECORD: (decode_keyed_record, _summarise_parts),
+    COMMAND_TIMED_RECORD: (decode_timed_record,
+                           lambda d: 'id %-6d value %-6d field %d' % (
+                               d.identifier, d.value, d.when)),
+    COMMAND_SIZED_PAYLOAD: (decode_sized_payload,
+                            lambda d: 'id %-6d %d byte%s' % (
+                                d.identifier, len(d.payload),
+                                '' if len(d.payload) == 1 else 's')),
+    COMMAND_GATE: (decode_gate, lambda d: 'flag %s' % ('on' if d else 'off')),
+}
 
 SUBSCRIBER_RESET_ACTIONS = ((0x01, 'clear stored guide'), (0x02, 'clear stored settings'))
 
@@ -831,7 +1104,12 @@ def new_guide():
     return {'pending': {}, 'slots': [], 'blocks': {}, 'titles': {}, 'descriptions': {},
             'clock': [], 'daylight': [], 'sequence': [], 'station': [],
             'channel_data': {}, 'theme_names': {}, 'regions': [], 'resets': [],
-            'unnamed': Counter(), 'packets': [], 'undecodable': Counter()}
+            # channel id -> the number it sits on, as the Region command's lineup gives it
+            'lineup': {},
+            'unnamed': Counter(), 'packets': [], 'undecodable': Counter(),
+            # the nine the loader implements and nothing here can name, kept by type so a
+            # capture that ever carries one has somewhere to put it
+            'unnamed_commands': defaultdict(list)}
 
 def describe_starsight_command(command_type, command, guide):
     """ The lines one command contributes to the log, in broadcast order
@@ -897,8 +1175,9 @@ def describe_starsight_command(command_type, command, guide):
         if channel is None:
             return []
         guide['channel_data'][channel.channel] = channel
-        return ['Channel Data ch %-6d number %-4d %s' % (
-            channel.channel, channel.number, channel.call_sign or '(no call sign)')]
+        return ['Channel Data ch %-6d number %-4d %s%s' % (
+            channel.channel, channel.number, channel.call_sign or '(no call sign)',
+            ' (%s)' % channel.network if channel.network else '')]
 
     if command_type in (COMMAND_THEME_CATEGORY, COMMAND_THEME_SUB_CATEGORY):
         named = decode_theme_names(command)
@@ -916,7 +1195,12 @@ def describe_starsight_command(command_type, command, guide):
         if region is None:
             return []
         guide['regions'].append(region)
-        return ['Region       id %-6d %d' % (region.region, region.value)]
+        for channel, number in region.channels:
+            guide['lineup'][channel] = number
+        return ['Region       id %-6d %d channel%s, from %s%s' % (
+            region.region, len(region.channels),
+            '' if len(region.channels) == 1 else 's', region.effective,
+            ' (now)' if region.immediate else '')]
 
     if command_type == COMMAND_SUBSCRIBER_RESET:
         actions = decode_subscriber_reset(command)
@@ -925,20 +1209,34 @@ def describe_starsight_command(command_type, command, guide):
         guide['resets'].append(tuple(actions))
         return ['Reset        %s' % (', '.join(actions) or 'nothing')]
 
+    if command_type in UNNAMED_DECODERS:
+        decoded = UNNAMED_DECODERS[command_type][0](command)
+        if decoded is None:
+            return []
+        guide['unnamed_commands'][command_type].append(decoded)
+        return ['type %-2d      %s' % (command_type,
+                                       UNNAMED_DECODERS[command_type][1](decoded))]
+
     if command_type == COMMAND_STATION_NODE_STATUS:
-        # 733 fixed bytes of the station's own health, about every five minutes. Roughly
-        # 95% of it is identical from one to the next; what moves is a pair of 32 bit
-        # counters and scattered single bits of what looks like a node bitmap. Three
-        # instances in a capture is not enough to name fields from, and SSLOAD.DLL is no
-        # help - its table sends type 21 to the trace function like type 20 - so the
-        # command is framed, checksummed, counted and reported, and not invented.
+        # The station's own health, every five or ten minutes. Its length is not fixed:
+        # KET sends 733 bytes of which roughly 95% is identical from one to the next,
+        # while KCET sends 74 and adds two more every instance, so it is a header and a
+        # list that accumulates. Two timestamps sit at bytes 8 and 12 in both and neither
+        # moves; what moves is the clock, a pair of counters that run in opposite
+        # directions by the same step, and scattered single bits. Fifteen instances over
+        # two stations is not enough to name the rest, and SSLOAD.DLL is no help - its
+        # table sends type 21 to the trace function like type 20 - so the command is
+        # framed, checksummed, counted and reported, and not invented.
         node = decode_station_node(command)
         guide['station'].append((node, bytes(command)))
         if node is None:
             return ['Station Node %d bytes' % len(command)]
-        return ['Station Node %d bytes  assembled %s  station clock %s GMT' % (
-            len(command), node.assembled.strftime('%Y-%m-%d %H:%M'),
-            node.clock.strftime('%Y-%m-%d %H:%M:%S'))]
+        return ['Station Node v%d %d bytes  assembled %s  clock %s%s' % (
+            node.version, len(command), node.assembled.strftime('%Y-%m-%d %H:%M'),
+            node.clock.strftime('%Y-%m-%d %H:%M:%S GMT')
+            if node.clock is not None else '(not found)',
+            '  %d of %d done, %d to go' % (node.done, node.total, node.remaining)
+            if node.total is not None else '')]
 
     if command_type == COMMAND_SEQUENCE_NUMBER:
         guide['sequence'].append(decode_sequence_number(command))
@@ -1291,16 +1589,24 @@ def _iso(when):
     """ The wire carries GMT, so every instant in the export is written as GMT """
     return when.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-def _channel_entry(channel, data):
+def _channel_entry(channel, data, lineup=None):
     """ One channel, with whatever a Channel Data command said about it
 
-    A capture that carries no Channel Data leaves every channel as a bare id, which is
-    what all five of them do; the fields only appear once one is caught.
+    A channel's number can come from either side of the pair: the Region command's lineup
+    gives it for every channel at once, and a Channel Data command gives it again alongside
+    the call letters. A capture carrying neither leaves the channel a bare id, which is what
+    all five of them do.
     """
     entry = {'id': channel}
+    if lineup and channel in lineup:
+        entry['channelNumber'] = lineup[channel]
     if data is not None:
         if data.call_sign:
             entry['callSign'] = data.call_sign
+        if data.network:
+            entry['network'] = data.network
+        if data.label:
+            entry['label'] = data.label
         entry['channelNumber'] = data.number
         if data.shows_call_sign:
             entry['showsCallSign'] = True
@@ -1377,7 +1683,7 @@ def write_starsight_json(output_filename, guide):
         listings.append(listing)
 
     document = {
-        'channels': [_channel_entry(channel, channel_data.get(channel))
+        'channels': [_channel_entry(channel, channel_data.get(channel), guide.get('lineup'))
                      for channel in sorted({slot[1] for slot in slots} | set(channel_data))],
         'themes': [dict({'id': theme}, **({'name': theme_names[theme]}
                                           if theme in theme_names else {}))

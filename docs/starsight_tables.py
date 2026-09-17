@@ -21,14 +21,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.p
 
 from lib.starsight import (ADVISORY_NAMES, ATTRIBUTE_BLACK_AND_WHITE,
                            ATTRIBUTE_CLOSED_CAPTIONED, ATTRIBUTE_STEREO,
-                           CHANNEL_CALL_SIGN_WIDTH, CHANNEL_ID_MASK,
+                           CHANNEL_LABEL_WIDTH, REGION_APPLY_NOW, CHANNEL_ID_MASK,
                            CHANNEL_SHOWS_CALL_SIGN, COMMANDS_SEEN, COMMAND_NAMES,
                            COMMAND_TABLE, COMPRESSED_FLAG, DESCRIPTION_EXTENDED, LOADER,
                            MEASURED, PATENT, PROVENANCE_NOTES, SLOT_HAS_DESCRIPTION,
                            SLOT_HAS_SHOW_GROUP, SLOT_JOINED_IN_PROGRESS, SLOT_PAY_PER_VIEW,
                            SLOT_UNNAMED, STARSIGHT_CRC_POLYNOMIAL, STARSIGHT_EPOCH,
                            STARSIGHT_HEADER, STARSIGHT_MAX_PACKET, STARSIGHT_SYNC,
-                           STARSIGHT_TRAILER, STATION_ASSEMBLED, STATION_CLOCK,
+                           STARSIGHT_TRAILER, STATION_ASSEMBLED, STATION_BUILT,
+                           STATION_TOTAL, STATION_DONE, STATION_REMAINING,
                            SUBSCRIBER_RESET_ACTIONS)
 from lib.starsight_table import STARSIGHT_HUFFMAN, STARSIGHT_HUFFMAN_MAX_BITS
 
@@ -64,6 +65,22 @@ CRC = [
     ('final inversion', 'none - the register is returned as it stands', M),
     ('header check', 'crc32(bytes 0..8) & 0xFFFF == bytes 9-10 read little endian', M),
     ('body check', 'crc32(the whole packet, its own trailer included) == 0', M),
+]
+
+# What the body checksum can be made to do beyond saying yes or no. A CRC is linear over
+# GF(2), so the thirty-two bits of it are thirty-two equations in the packet's bits: where
+# the damage is in a known place the missing bits are solved for, and where it is not the
+# position has to be searched too, which is what costs the budget. Each row is the number
+# of bits of checksum still unspent once the damage is accounted for, which is the odds
+# against a wrong answer being accepted.
+RECOVERY = [
+    ('nothing', '0', '1', '32', 'passes as it stands'),
+    ('bits the slicer doubted, 2 rising to 20', '2 - 20', '1', '30 - 12', 'solved as erasures'),
+    ('one lost VBI line', '16', '1', '16', 'solved as erasures'),
+    ('one flipped bit the slicer was sure of', '1', '2^10.6', '21', 'searched'),
+    ('two flipped bits', '2', '2^20.3', '12', 'searched'),
+    ('two lost VBI lines', '32', '1', '0', 'refused'),
+    ('damage the confidence did not point at', '-', '-', '-', 'refused'),
 ]
 
 FLAGS = [
@@ -106,9 +123,15 @@ FLAGS = [
          'Display the call sign rather than the channel number.', L),
     ]),
     ('Channel Data byte 7', [
-        (0xFF, 'call sign presence',
-         'Read from 0x80 down, one bit per candidate byte at 8-15; the selected bytes are '
-         'concatenated and padded to %d.' % CHANNEL_CALL_SIGN_WIDTH, L),
+        (0xFF, 'short label',
+         'Read from 0x80 down, one bit per character at 8-15; the selected characters make '
+         'a %d character label for a display too narrow for the whole call sign.'
+         % CHANNEL_LABEL_WIDTH, L),
+    ]),
+    ('Region byte 5', [
+        (REGION_APPLY_NOW, 'applyNow',
+         'Use this lineup at once. Otherwise the loader holds the command and replays it '
+         'when the stream clock reaches the effective time.', L),
     ]),
     ('Subscriber Reset byte 2',
      [(mask, name, 'The loader calls a different routine for each bit.', L)
@@ -123,15 +146,54 @@ LAYOUTS = [
                                       ('2-5', 'daylight saving starts', M),
                                       ('6-9', 'daylight saving ends', M)]),
     ('Region', 3, L, [('0', 'type', L), ('1-2', 'length', L), ('3-4', 'region id', L),
-                      ('6-9', 'a 32 bit field', L),
-                      ('10..', 'the channels available in the region', P)]),
+                      ('5', 'flags', L),
+                      ('6-9', 'effective from, same epoch as Time', L),
+                      ('10', 'channel count, so a lineup is at most 255', L),
+                      ('11.. +0', 'bit 7: channel number bit 8; bits 0-6: channel id high 7', L),
+                      ('11.. +1', 'channel id low 8 (15 bits with the byte before)', L),
+                      ('11.. +2', 'channel number low 8 (9 bits with the byte before)', L),
+                      ('11.. +3', 'never read by the loader', L)]),
     ('Channel Data', 4, L, [
         ('0', 'type', L), ('1', 'length', L),
         ('3', 'bit 7: channel number bit 8; bits 0-6: channel id high 7', L),
         ('4', 'channel id low 8 (15 bits with byte 3)', L),
         ('5', 'flags', L), ('6', 'channel number low 8 (9 bits with byte 3)', L),
-        ('7', 'which of bytes 8-15 are call letters', L),
-        ('8-15', 'call letter candidates', L)]),
+        ('7', 'which of bytes 8-15 make the short label', L),
+        ('8-15', 'one string, CALL-NET: call letters, a dash, the network', L)]),
+    ('type 9', 9, L, [('0', 'type', L), ('1', 'length', L), ('2-3', 'an id', L),
+                      ('4..', 'payload, to the length in byte 1', L)]),
+    ('type 10', 10, L, [('0-8', 'nine bytes the loader passes to the host application '
+                                'without reading them', L)]),
+    ('type 31', 31, L, [('0', 'type', L), ('1-2', 'length', L),
+                        ('3-8', 'a six byte key; the loader ignores the command unless it '
+                                'matches the one it holds', L),
+                        ('10', 'first table entry count', L),
+                        ('11', 'second table entry count', L),
+                        ('12..', 'that many two byte entries, then the second table, then '
+                                 'two more bytes', L)]),
+    ('type 36', 36, L, [('0', 'type', L), ('1-2', 'length', L),
+                        ('3', 'high nibble: which part this is', L),
+                        ('4', 'which message the parts belong to', L),
+                        ('5..', 'that part of it', L)]),
+    ('type 37', 37, L, [('0', 'type', L), ('1-2', 'length', L), ('3', 'low nibble, a field', L),
+                        ('4-5', 'address count', L),
+                        ('6..', 'that many two byte addresses; the loader reads no further '
+                                'unless its own is among them', L),
+                        ('after them', 'the payload for the receivers named', L)]),
+    ('type 38', 38, L, [('0', 'type', L), ('1-2', 'length', L), ('3-4', 'an id', L),
+                        ('5', 'a byte the loader keeps', L), ('6', 'flags', L),
+                        ('7', 'low 3 bits: first length; upper bits: more flags', L),
+                        ('8', 'second length', L), ('9', 'third length', L),
+                        ('10-11', 'a second 16 bit value', L),
+                        ('12..', 'the three payloads, one after another', L)]),
+    ('type 39', 39, L, [('0', 'type', L), ('1-2', 'length', L), ('3-4', 'an id', L),
+                        ('5-6', 'a 16 bit value', L), ('7-10', 'a 32 bit value', L),
+                        ('11', 'a byte', L)]),
+    ('type 40', 40, L, [('0', 'type', L), ('1-2', 'length', L), ('3-4', 'an id', L),
+                        ('5', 'a byte the loader keeps', L),
+                        ('6..', 'payload, to the length in bytes 1-2', L)]),
+    ('type 42', 42, L, [('0', 'type', L), ('1-2', 'length', L),
+                        ('8', 'bits 4-5: set a flag, clear it, or neither', L)]),
     ('Show List', 5, M, [
         ('0', 'type', M), ('1-2', 'length', M), ('3', 'low nibble, meaning unknown', M),
         ('4-5', 'channel id, 15 bits (0x%04X)' % CHANNEL_ID_MASK, M),
@@ -164,12 +226,42 @@ LAYOUTS = [
                                 ('2-5', 'a 32 bit counter, one per packet', M)]),
     ('Station Node Status', 21, M, [
         ('0', 'type', M), ('1-2', 'length, always 733', M),
+        ('3', 'which layout this is. The 1994 KCET capture sends 1 and the 1998 KET '
+              'tapes send 3, and the fields after byte 20 sit in different places in each', M),
+        ('4-5', 'a constant, 500 on KCET and 405 on KET', M),
+        ('6-7', 'a constant, 5 on KCET and 52 on KET', M),
+        ('%d-%d' % (STATION_BUILT, STATION_BUILT + 3),
+         'a Unix time, constant within a capture and earlier than the one after it', M),
         ('%d-%d' % (STATION_ASSEMBLED, STATION_ASSEMBLED + 3),
-         'when the block was assembled, Unix seconds', M),
-        ('%d-%d' % (STATION_CLOCK, STATION_CLOCK + 3),
-         "the station's own clock, Unix seconds", M),
-        ('the rest', '438 of 733 bytes are identical across every instance; what moves is '
-                     'two monotonic counters and what looks like a node bitmap', M)]),
+         'when the block was assembled, Unix seconds; constant within a capture', M),
+        ('20-23', '0x12CEA600 in every instance of both stations, four years and a '
+                  'continent apart. Unexplained, and the only value in the block that is', M),
+        ('varies',
+         'the station clock at the moment of sending, Unix seconds. Not at a fixed offset '
+         '- 48 in layout 3 and 58 in layout 1 - so it is found as the one field past the '
+         'assembly time that reads as a time shortly after it', M),
+        ('%d-%d, %d-%d, %d-%d (layout 1)' % (STATION_TOTAL, STATION_TOTAL + 1,
+                                             STATION_DONE, STATION_DONE + 1,
+                                             STATION_REMAINING, STATION_REMAINING + 1),
+         'how far through its cycle the station is: a total, how many are done and how '
+         'many are left. They hold to the byte across all twelve instances of the 1994 '
+         'capture - 487 in all, 33 more done every ten minutes - and no three fields '
+         'anywhere in layout 3 hold the same identity, so they are read only when they '
+         'agree', M),
+        ('66-67 (layout 1)',
+         'the minutes between the assembly time and the clock. Exact on all twelve, and '
+         'so carries nothing the other two fields do not', M),
+        ('the rest of layout 1',
+         'zero. The block grows two bytes every instance and the added bytes are padding, '
+         'so something is counted that this capture never fills in', M),
+        ('the rest of layout 3',
+         '669 bytes, two thirds of them zero and 93 to 95 per cent of them identical from '
+         'one instance to the next ten minutes later, in place - aligning the two at any '
+         'other offset fits worse, so nothing slides. What does change is 7 to 9 per cent '
+         'of it, in short runs which are most often pairs two bytes apart, so what is '
+         'being updated is 16 bit fields scattered through a table that is otherwise '
+         'static. Six instances over two captures is not enough to say what they count', M),
+    ]),
     ('type 31', 31, L, [('0', 'type', L), ('1-2', 'length', L), ('10', 'a count', L),
                         ('11', 'a second count', L),
                         ('12..', 'two arrays of 16 bit values, sized by those counts', L)]),
@@ -225,6 +317,9 @@ def tables():
                    for offset, size, field, note, source in PACKET],
         'checksums': [{'property': name, 'value': value, 'provenance': source}
                       for name, value, source in CRC],
+        'recovery': [{'damage': damage, 'unknownBits': unknown, 'candidates': candidates,
+                      'checksumLeft': left, 'outcome': outcome}
+                     for damage, unknown, candidates, left, outcome in RECOVERY],
         'commands': commands,
         'commandLayouts': [{'name': name, 'type': command_type, 'provenance': source,
                             'bytes': [{'at': at, 'field': field, 'provenance': field_source}
@@ -351,6 +446,45 @@ def as_html(doc):
           [(c['property'], c['value'], Markup(_tag(c['provenance'])))
            for c in doc['checksums']])
 
+    out.append("<h2 id='recovery'>Recovering a damaged packet</h2>")
+    out.append("<p>The body checksum is not only a test. A CRC is linear over GF(2), so its "
+               "thirty-two bits are thirty-two equations in the bits of the packet, and where "
+               "the damage sits in a known place the lost bits can be solved for rather than "
+               "guessed. What makes that worth doing is the shape of the damage. Measured over "
+               "the 1994 KCET capture, the slicer decides a bit with about 6.8 sigma of margin, "
+               "which on ordinary noise would be one error in 10^15; the real rate is nearer one "
+               "in a thousand. The errors are not noise at all. They are rare dropouts that "
+               "destroy a few bits outright - 0.2 to 0.9 per cent of bits land inside half the "
+               "eye, where noise alone would put 0.005 per cent - and a packet spans about a "
+               "hundred fields, so most packets meet one.</p>")
+    out.append("<p>That is what makes them recoverable. A dropout leaves its mark on the bits "
+               "the slicer decided by the narrowest margin, so those positions are already known "
+               "and only their values are in doubt. A bit like that is an <i>erasure</i>, and an "
+               "erasure costs one bit of the checksum where a flipped bit of unknown position "
+               "costs about eleven, because its position has to be searched as well and every "
+               "candidate tried is a chance to checksum by coincidence.</p>")
+    out.append("<p>How many erasures a packet needs is a property of that packet, so the budget "
+               "is not fixed: the two least confident bits are tried first and the set widens "
+               "only while the checksum refuses it. <b>Left over</b> below is the bits of "
+               "checksum still unspent, which is what the answer is verified with. On the 1994 "
+               "KCET capture half of all repairs are done with four erased bits or fewer and the "
+               "mean is 6.1, so 25.9 bits are typically held back rather than the 12 that going "
+               "straight to the ceiling would leave - the odds of a coincidence fall from one in "
+               "4,000 to one in 60 million. Whatever comes back must also tile into commands, which no "
+               "arithmetic here can fake, and a candidate that does not tile is a reason to "
+               "spend more of the budget rather than to give up.</p>")
+    _rows(out, ('Damage', 'Unknown bits', 'Candidates', 'Left over', 'Outcome'),
+          [(r['damage'], r['unknownBits'], r['candidates'], r['checksumLeft'], r['outcome'])
+           for r in doc['recovery']])
+    out.append("<p>Measured on that capture: of 173 packets the sequence numbers say were "
+               "sent, 154 were found, 19 passed the body checksum outright and 140 do once "
+               "repaired. Three things corroborate them, none of which the repair constrains. "
+               "The recovered sequence numbers rise in step across the whole capture. The "
+               "recovered Time command puts the station eight hours behind GMT, which is Los "
+               "Angeles. And solving the same packets with the budget fixed at the ceiling "
+               "instead of escalating returns byte for byte the same answers - two different "
+               "routes to the same packet.</p>")
+
     out.append("<h2 id='commands'>Commands</h2>")
     out.append("<p>Indexed by <code>byte 0 &amp; 0x3F</code>. <b>Length</b> is how wide the "
                "length field after the type is and <b>header</b> where the variable part "
@@ -410,12 +544,20 @@ def as_html(doc):
         ('Station Node Status, 295 of 733 bytes',
          'Two monotonic counters and what looks like a node bitmap. Seven instances across '
          'three tapes is not enough to name fields from.'),
-        ('Types 9, 10, 31, 36-40, 42',
-         'The loader runs code for them and neither the patents nor any capture says what '
-         'they carry. Framed and counted here, not interpreted.'),
-        ('Region and Channel Data payloads',
-         'The fixed headers are read; what follows is a channel list the loader walks with '
-         'a routine this has not yet followed.'),
+        ('What types 9, 10, 31, 36-40 and 42 are for',
+         'Their layouts are read off the loader and are in the table above; what they mean '
+         'is not. They gate each other through two bytes the loader keeps - 31 advances a '
+         'state, 9 waits for it, 42 sets a flag, 36 and 37 wait for that - so they are one '
+         'sequence a receiver is walked through rather than nine messages. The first step '
+         'is addressed by a six byte key the receiver must already hold, which is reason '
+         'enough for no capture to carry any of them.'),
+        ('The fourth byte of a Region lineup entry',
+         'Three of the four carry the channel id and its number. The loader never reads '
+         'the fourth.'),
+        ('Which network names the loader knows',
+         'Channel Data gives the network as text after a dash, and the loader looks that '
+         'text up in a table to store an id. The table itself is in dbsets.dll, not read '
+         'here, so the name is carried through as it was sent.'),
     ])
 
     out.append("</main></body></html>")

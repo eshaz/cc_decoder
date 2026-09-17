@@ -27,21 +27,25 @@
             "maximum": 65535
           },
           "callSign": {
-            "description": "The station's call letters, up to four. From bytes 8-15 of a Channel Data command, selected by the presence mask in byte 7. Absent unless a Channel Data command was captured, which none so far has been.",
+            "description": "The station's call letters. From bytes 8-15 of a Channel Data command, which carry one string of the form CALL-NET; the loader splits it at the first dash from the fourth character on and this is the part before it. Absent unless a Channel Data command was captured, which none so far has been.",
             "type": "string"
           },
           "channelNumber": {
             "type": "integer",
             "minimum": 0,
             "maximum": 511,
-            "description": "The position the channel is tuned at, 9 bits. From byte 6 of a Channel Data command with its top bit in byte 3. Absent unless a Channel Data command was captured."
+            "description": "The position the channel is tuned at, 9 bits. From the Region command's lineup entry for this channel, or from byte 6 of a Channel Data command with its top bit in byte 3, which encode it identically. Absent unless one of those was captured."
           },
           "showsCallSign": {
             "const": true,
             "description": "The receiver should show the call sign rather than the channel number. From bit 1 of byte 5 of a Channel Data command. Omitted when false."
           },
-          "displayName": {
-            "description": "The channel's name. From a Channel Data command. Absent unless one was captured, which none so far has been.",
+          "network": {
+            "description": "The network the station carries, such as CBS. From the part of bytes 8-15 of a Channel Data command after the dash, which the loader looks up in a table of network names. Absent unless a Channel Data command was captured and named one.",
+            "type": "string"
+          },
+          "label": {
+            "description": "A four character short form of the call sign, for a display too narrow for the whole of it. From the four of bytes 8-15 of a Channel Data command that the presence mask in byte 7 selects. Absent unless a Channel Data command was captured.",
             "type": "string"
           }
         }
