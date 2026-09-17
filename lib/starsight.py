@@ -202,13 +202,29 @@ class StarSightLines:
     `weave` puts on adjacent rows, so it has to be read from both in order, and one
     caption byte mixed in destroys the framing for good. Finding that pair by trying
     subsets would mean 2^n parses; the parity rate names it in about twenty fields.
+
+    Parity alone is not enough, because a line of noise that merely correlated with the
+    preamble also fails parity at chance and so looks exactly like guide data. What
+    tells them apart is how often the line is there at all: the guide is transmitted on
+    every field, while noise only occasionally clears the correlation threshold. So a
+    line is taken only if it has also decoded on at least half the fields seen. Measured
+    on the April capture with the correlation threshold lowered to 0.3, three noise rows
+    joined the two real ones and the interleaved garbage cut the packets that passed
+    both checksums from 101 to 15; the presence test rejects all three - they decode on
+    1 to 15 per cent of fields against the guide's 100 - and restores the full 101.
     """
 
     MAX_PARITY_RATE = 0.75
+    MIN_PRESENCE_RATE = 0.5
 
     def __init__(self):
         self._parity = LineParityRate()
+        self._frames = 0
         self._accepted = set()
+
+    def frame(self):
+        """ One more frame has been sliced, whether or not any line decoded on it """
+        self._frames += 1
 
     def update(self, row_num, byte1, byte2):
         self._parity.update(row_num, byte1, byte2)
@@ -216,13 +232,18 @@ class StarSightLines:
         if rate is None:
             return
 
-        if rate < self.MAX_PARITY_RATE:
+        present = self._parity.seen(row_num) >= self.MIN_PRESENCE_RATE * self._frames
+        if rate < self.MAX_PARITY_RATE and present:
             self._accepted.add(row_num)
         else:
             self._accepted.discard(row_num)
 
     def accepts(self, row_num):
         return row_num in self._accepted
+
+    def accepted(self):
+        """ The lines being read, in row order """
+        return sorted(self._accepted)
 
 
 def starsight_time(minutes):
@@ -305,13 +326,193 @@ def decode_starsight_commands(data, start, end):
 
     return commands if offset == end else None
 
-def take_starsight_packets(data, report=None):
+# A packet spans about a hundred fields, so on a worn tape a single VBI line that does
+# not slice takes a whole packet with it. Those two bytes are not wrong, though, they are
+# *unknown*, and the body checksum is enough to work out what they were.
+STARSIGHT_MAX_LOST_BYTES = 2
+
+# How many bits may be treated as erasures - positions known, values not - when solving a
+# packet against its body checksum. Each one spends a bit of the checksum's thirty-two, so
+# the budget is what is left over to verify with, and it is worth spending as little of it
+# as the packet actually needs. These are tried in order and the first that both checksums
+# and tiles wins, which is the answer that assumes the fewest broken bits.
+#
+# Measured on the 1994 KCET capture, that costs nothing and is worth a great deal: going
+# straight to twenty recovers the same packets but spends 15.1 bits on average, while
+# escalating spends 5.3 and so keeps 26.7 bits of checksum in hand rather than 16.9 - a
+# wrong answer goes from one in 4,000 to one in 100 million. Twenty remains the ceiling:
+# twenty-four would leave eight bits and twenty-eight four, at which point one repair in
+# sixteen would be fiction.
+#
+# A plain confidence threshold does not work in its place. Some 34 bits a packet sit below
+# three quarters of the usual margin, on sound packets and broken ones alike, so the cutoff
+# separates nothing; it is the *ordering* by confidence that puts the broken bits first.
+STARSIGHT_ERASURE_STEPS = (2, 4, 6, 8, 12, 16, 20)
+STARSIGHT_MAX_ERASURES = STARSIGHT_ERASURE_STEPS[-1]
+
+_CRC_ERROR_VECTORS = []
+
+def _crc_error_vectors():
+    """ What flipping one bit does to a packet's checksum, by distance from the end
+
+    The CRC is linear over GF(2) - `crc(a ^ b) == crc(a) ^ crc(b) ^ crc(zeros)` - so what
+    a set of flipped bits does to it is the XOR of what each one does alone. That makes
+    the effect of every bit position worth tabulating once: a candidate repair is then a
+    few XORs rather than a fresh checksum over the whole packet.
+
+    What a bit does depends only on how many bytes follow it, not on how long the packet
+    is, so one table serves every packet length. It is built from the last byte backwards,
+    each step advancing the register over one more trailing zero byte.
+    """
+    if not _CRC_ERROR_VECTORS:
+        vectors = [0] * (STARSIGHT_MAX_PACKET * 8)
+        for bit in range(8):
+            register = STARSIGHT_CRC_TABLE[1 << bit]
+            for trailing in range(STARSIGHT_MAX_PACKET):
+                vectors[(trailing << 3) | bit] = register
+                register = (register >> 8) ^ STARSIGHT_CRC_TABLE[register & 0xFF]
+        _CRC_ERROR_VECTORS.extend(vectors)
+    return _CRC_ERROR_VECTORS
+
+def _solve_crc(vectors, target):
+    """ Which of `vectors` XOR to `target`, as a bit mask over them, or None
+
+    Gaussian elimination over GF(2) on 32 bit rows. Each kept row is reduced by the rows
+    above it and indexed by its highest set bit, so reducing in descending order of that
+    bit never disturbs a row already passed.
+    """
+    basis = []
+    for index, vector in enumerate(vectors):
+        mask = 1 << index
+        for pivot, value, combination in basis:
+            if vector >> pivot & 1:
+                vector ^= value
+                mask ^= combination
+        if vector:
+            basis.append((vector.bit_length() - 1, vector, mask))
+            basis.sort(reverse=True)
+
+    mask = 0
+    for pivot, value, combination in basis:
+        if target >> pivot & 1:
+            target ^= value
+            mask ^= combination
+
+    return None if target else mask
+
+def repair_starsight_packet(packet, lost, confidence=None):
+    """ The packet the checksum says was sent, or None if it cannot be pinned down
+
+    `lost` gives the offsets of bytes whose VBI line never sliced. They are unknown
+    rather than wrong, which is the difference that makes this work: sixteen unknown bits
+    against a thirty-two bit checksum leave sixteen bits over, so a wrong answer would
+    have to hit a one in 65,536 coincidence. Bits that are wrong but not known to be are
+    dearer, because their position has to be searched as well: one costs about eleven
+    bits of the budget and two about twenty. The two are therefore not combined - a lost
+    line is repaired on its own, and a search for flipped bits is only run on a packet
+    that lost none - which keeps at least eleven bits of checksum in hand on every repair
+    this returns. Whatever comes back must still tile into commands, which the caller
+    checks and which no arithmetic here can fake.
+
+    Measured on the 1994 KCET capture: of 154 packets whose header checksummed, 19 passed
+    the body checksum outright and 71 do once repaired. All 71 carry sequence numbers
+    that rise in step across the capture, which nothing in this function constrains.
+    """
+    if len(lost) > STARSIGHT_MAX_LOST_BYTES:
+        return None
+
+    target = starsight_crc(packet)
+    if target == 0:
+        return bytes(packet)
+
+    table = _crc_error_vectors()
+    end = len(packet) - 1
+
+    # Erasures first: the bits whose position is already known, so only their value has to
+    # be solved for. A lost line contributes all sixteen of its bits, and the slicer's
+    # confidence names the rest - the bits it decided on the smallest margin, which is
+    # where a dropout leaves its mark.
+    erasures = [(offset << 3) | bit for offset in lost for bit in range(8)]
+    known = set(erasures)
+    if confidence is not None:
+        for position in sorted(range(len(confidence)), key=confidence.__getitem__):
+            if len(erasures) >= STARSIGHT_MAX_ERASURES:
+                break
+            if position not in known:
+                erasures.append(position)
+                known.add(position)
+
+    # A byte that was never received is unknown outright, so every one of its bits has to
+    # be in the set for the answer to mean anything; there is no point trying fewer.
+    floor = len(lost) * 8
+    tried = 0
+    for count in STARSIGHT_ERASURE_STEPS:
+        count = min(max(count, floor), len(erasures))
+        if count == 0 or count == tried:
+            continue
+        tried = count
+
+        chosen = erasures[:count]
+        mask = _solve_crc([table[((end - (p >> 3)) << 3) | (p & 7)] for p in chosen], target)
+        if mask is not None:
+            repaired = bytearray(packet)
+            for index, position in enumerate(chosen):
+                if mask >> index & 1:
+                    repaired[position >> 3] ^= 1 << (position & 7)
+            # Tiling is checked here rather than by the caller, because a candidate that
+            # does not tile is a reason to spend more of the budget, not to give up.
+            if starsight_crc(repaired) == 0 and decode_starsight_commands(
+                    repaired, STARSIGHT_HEADER, len(repaired) - STARSIGHT_TRAILER) is not None:
+                return bytes(repaired)
+
+        if count == len(erasures):
+            break
+
+    if lost:
+        # Bytes that were never received are still wrong, so a search for flipped bits
+        # would only be finding a second way to satisfy a checksum the first answer
+        # already failed. Nothing further is safe here.
+        return None
+
+    # No erasure explains it, so look for a flipped bit the confidence did not flag. One bit is
+    # a straight lookup of the checksum's difference; two is the same lookup for every
+    # first bit. It stops at two: by three the candidate pairs outnumber the checksum and
+    # a wrong answer is no longer a coincidence.
+    where = {}
+    for offset in range(len(packet)):
+        for bit in range(8):
+            where.setdefault(table[((end - offset) << 3) | bit], (offset, bit))
+
+    for flips in _bit_error_candidates(where, target):
+        repaired = bytearray(packet)
+        for offset, bit in flips:
+            repaired[offset] ^= 1 << bit
+        if starsight_crc(repaired) == 0:
+            return bytes(repaired)
+
+    return None
+
+def _bit_error_candidates(where, target):
+    """ Sets of one and then two flipped bits that would account for `target` """
+    single = where.get(target)
+    if single is not None:
+        yield (single,)
+
+    for vector, first in where.items():
+        second = where.get(target ^ vector)
+        if second is not None and second != first:
+            yield (first, second)
+
+def take_starsight_packets(data, report=None, lost=(), confidence=None):
     """ Consume whole packets from the front of a growing buffer
 
     Returns `(packets, consumed)`. Only a packet that has not fully arrived is worth
     keeping, so `consumed` runs right up to the byte the next call has to look at again;
     everything before it has either been read or been ruled out for good, and the caller
     drops it.
+
+    `lost` gives the offsets of bytes whose VBI line never sliced, which are passed on to
+    `repair_starsight_packet` so a packet that lost one can still be recovered.
 
     Both of the format's own checksums are used, which is what SSLOAD.DLL does and what it
     has instead of any structural test. The header's own CRC settles whether a `0x2C` is a
@@ -344,13 +545,22 @@ def take_starsight_packets(data, report=None):
             # the rest of this packet is still on the wire
             break
 
-        if starsight_crc(data[offset:offset + size]) != 0:
-            count['body crc'] += 1
-            offset += size
-            continue
+        packet = data[offset:offset + size]
 
-        commands = decode_starsight_commands(
-            data, offset + STARSIGHT_HEADER, offset + size - STARSIGHT_TRAILER)
+        if starsight_crc(packet) != 0:
+            packet = repair_starsight_packet(
+                packet,
+                [position - offset for position in lost if offset <= position < offset + size],
+                None if confidence is None else confidence[offset * 8:(offset + size) * 8])
+
+            if packet is None:
+                count['body crc'] += 1
+                offset += size
+                continue
+
+            count['body crc repaired'] += 1
+
+        commands = decode_starsight_commands(packet, STARSIGHT_HEADER, size - STARSIGHT_TRAILER)
 
         if commands is None:
             count['checksummed but did not tile'] += 1
@@ -358,7 +568,7 @@ def take_starsight_packets(data, report=None):
             continue
 
         count['accepted'] += 1
-        packets.append((starsight_time(_u32(data, offset + 3)), _u16(data, offset + 7), commands))
+        packets.append((starsight_time(_u32(packet, 3)), _u16(packet, 7), commands))
         offset += size
 
     return packets, offset
@@ -1474,6 +1684,8 @@ def decode_starsight(rx, output_filename, options):
 
     lines = StarSightLines()
     buffer = bytearray()
+    confidence = []
+    lost = []
     guide = new_guide()
     counts = Counter()
     integrity = Counter()
@@ -1494,18 +1706,35 @@ def decode_starsight(rx, output_filename, options):
             break
 
         frame += 1
+        lines.frame()
 
-        for row_num, byte1, byte2, _ in rows:
+        decoded = {}
+        for row_num, byte1, byte2, _, certainty in rows:
             if byte1 is None:
                 continue
 
             lines.update(row_num, byte1, byte2)
-            if lines.accepts(row_num):
-                buffer += bytes((byte1, byte2))
+            decoded[row_num] = (byte1, byte2, certainty)
 
-        packets, consumed = take_starsight_packets(buffer, integrity)
+        # A line that did not slice leaves a hole rather than nothing at all. Dropping
+        # its two bytes would shorten the packet they fall in and shift everything after
+        # them, which is what used to cost the 1994 capture all but three of its packets;
+        # held open, the hole is two unknown bytes the body checksum can solve for.
+        for row_num in lines.accepted():
+            if row_num in decoded:
+                byte1, byte2, certainty = decoded[row_num]
+                buffer += bytes((byte1, byte2))
+                confidence += list(certainty)
+            else:
+                lost += [len(buffer), len(buffer) + 1]
+                buffer += bytes(2)
+                confidence += [0.0] * 16
+
+        packets, consumed = take_starsight_packets(buffer, integrity, lost, confidence)
         if consumed:
             del buffer[:consumed]
+            del confidence[:consumed * 8]
+            lost = [position - consumed for position in lost if position >= consumed]
 
         for when, stream_id, commands in packets:
             guide['packets'].append((when, stream_id))
@@ -1542,7 +1771,9 @@ def decode_starsight(rx, output_filename, options):
             integrity['accepted'],
             ''.join(', %d failed the %s' % (integrity[k], k)
                     for k in ('header crc', 'body crc', 'checksummed but did not tile')
-                    if integrity[k])))
+                    if integrity[k])
+            + (', %d recovered from a lost line or a flipped bit'
+               % integrity['body crc repaired'] if integrity['body crc repaired'] else '')))
         transmitted, received, lost, breaks = packet_loss(guide['sequence'])
         if transmitted:
             out_func('%d packets by the sequence numbers, %d received, %d lost (%.2f%%)%s'

@@ -60,7 +60,8 @@ from setproctitle import setproctitle
 from multiprocessing import current_process
 
 
-PREAMBLE_RUN_IN_COUNT = 6.5
+# 7.0, not Table 2's 6.5: see the template built in `precompute_sine_templates`
+PREAMBLE_RUN_IN_COUNT = 7.0
 START_BIT_ZEROS_COUNT = 2
 START_BIT_ONES_COUNT = 1
 START_BIT_COUNT = START_BIT_ZEROS_COUNT + START_BIT_ONES_COUNT
@@ -479,9 +480,9 @@ def precompute_sine_templates(image_width, preamble_run_in_count):
             break
 
         template = np.concatenate((
-            np.sin(2 * np.pi * np.arange(run_len) / pixels_per_cycle), #   clock run in
-            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), 0), # 0,0
-            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #   1
+            np.sin(2 * np.pi * np.arange(run_len) / pixels_per_cycle - np.pi / 2), # run in
+            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), -1), #          0,0
+            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #             1
         ))
         template -= template.mean()
         var_t = np.sum(template ** 2)
@@ -604,12 +605,17 @@ def get_bit_value(bit_index, bit_width, bit_padding, normalized_line, normalized
     return 1 if seg.sum() / seg.size > normalized_median else 0
 
 def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
+    """ `(bit, how unsettled the window was, how far it sat from the slicing level)`
+
+    The last of those is the margin the decision was taken on. It is what says which bits
+    to doubt when something downstream disagrees with the line.
+    """
     seg = bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end)
     mean = seg.sum() / seg.size
     deviation = seg - mean
     std = math.sqrt((deviation * deviation).sum() / deviation.size)
 
-    return 1 if mean > normalized_median else 0, std
+    return 1 if mean > normalized_median else 0, std, abs(mean - normalized_median)
 
 def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot):
     """ Slice the two data bytes out of a line
@@ -619,31 +625,61 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
     for data, and which it is belongs to the consumer rather than here. `noisy` flags
     the bits whose sample window was too unsettled to trust, one flag per data bit,
     which is what the CEA-608 layer needs to correct a single bit error.
+
+    `confidence` is the other half of that, and the one StarSight needs, since StarSight
+    spends the eighth bit on data and so has no parity to lean on. It is one number per
+    data bit: how far that bit sat from the slicing level, over how far a bit on this line
+    sits from it typically. A bit that reads 1.0 is as clear as this line gets and one that
+    reads near 0 was all but a coin toss, which is what a tape dropout leaves behind.
     """
-    # fraction of data to remove at edges of each detected bit
-    bit_width_padding = 0.1
+    # Fraction of each bit cell to drop at its edges before averaging what is left. The
+    # edges are where the channel's ringing from the previous cell still sits, so they
+    # carry that cell as much as this one; sampling the middle half instead is the usual
+    # answer and measures better here. On the 1994 KCET tape it is worth 82 packets to 87;
+    # on both 1998 KET captures it changes nothing at all - 337 and 397 packets at 0.1,
+    # 0.25 and 0.35 alike - because a clean line decodes either way. Anywhere in 0.2 to
+    # 0.4 measures the same on this evidence, so this is the middle of that range rather
+    # than the best single number in it.
+    bit_width_padding = 0.25
 
     # ---- BIT DECODING ----
     preamble = normalized_line[round(preamble_start):round(preamble_end)]
     normalized_median = preamble.sum() / preamble.size
     bit_padding = math.ceil(bit_width_padding * bit_width)
 
-    # assert start bit
+    # assert start bits
+    #
+    # The three are 0, 0, 1, but only the last two are asserted. The first sits directly
+    # against the end of the clock run-in, and on a tape the run-in's last cycle can
+    # overshoot and decay across it, so it slices as 1 on a line that is otherwise
+    # perfect. Measured on the 1994 KCET VHS capture, that single bit was rejecting 89
+    # StarSight lines in 8,180 - and since a StarSight packet spans about a hundred
+    # fields, each lost line destroys a whole packet. Asserting the last two costs
+    # nothing where the signal is clean: over 20,000 fields of both 1998 KET captures it
+    # admits no line that the strict form did not, and the 11 lines it adds on the 1994
+    # tape all carry valid CEA-608 parity, so they are recovered data rather than noise.
     if (
-        get_bit_value(0, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 0
-        or get_bit_value(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 0
+        get_bit_value(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 0
         or get_bit_value(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 1
     ):
-        return None, None, 0
+        return None, None, 0, ()
 
     bits = []
+    margins = []
     noisy = 0
     for bit_index in range(DATA_BIT_COUNT):
-        bit, std = get_bit(bit_index + START_BIT_COUNT, bit_width, bit_padding,
-                           normalized_line, normalized_median, preamble_end)
+        bit, std, margin = get_bit(bit_index + START_BIT_COUNT, bit_width, bit_padding,
+                                   normalized_line, normalized_median, preamble_end)
         bits.append(bit)
+        margins.append(margin)
         if std > MIN_STD_DEV_FOR_CORRECTION:
             noisy |= 1 << bit_index
+
+    # Scale by this line's own typical margin rather than a fixed level, so the number
+    # means the same thing on a strong line and a weak one. The median is the right middle
+    # here because the bits worth flagging are exactly the outliers.
+    eye = sorted(margins)[len(margins) // 2]
+    confidence = tuple(m / eye for m in margins) if eye > 0 else (1.0,) * DATA_BIT_COUNT
 
     byte1 = sum(bit << i for i, bit in enumerate(bits[0:8]))
     byte2 = sum(bit << i for i, bit in enumerate(bits[8:16]))
@@ -665,7 +701,7 @@ def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_
             [cea608_byte(byte1, noisy, 0)[1], cea608_byte(byte2, noisy, 8)[1]]
         )
 
-    return byte1, byte2, noisy
+    return byte1, byte2, noisy, confidence
 
 def show_debug_plot(line, preamble_start, preamble_end, width, best_score, bits, bit_width, bit_width_padding, byte_data, byte_parity):
     import numpy as np
@@ -768,7 +804,7 @@ def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_p
         preamble_match = sync_to_preamble(img, start_idx)
 
         if preamble_match is not None and preamble_match["score"] > min_correlation:
-            byte1, byte2, noisy = decode_bytes(
+            byte1, byte2, noisy, confidence = decode_bytes(
                 preamble_match["normalized_line"],
                 preamble_match["preamble_start"],
                 preamble_match["preamble_end"],
@@ -777,7 +813,7 @@ def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_p
                 debug_plot,
             )
 
-            rows_found.append((start_idx, byte1, byte2, noisy))
+            rows_found.append((start_idx, byte1, byte2, noisy, confidence))
 
     return rows_found
 
@@ -838,6 +874,10 @@ class LineParityRate:
             return None
         return self._passed[row_num] / seen
 
+    def seen(self, row_num):
+        """ How many fields this line has decoded on """
+        return self._fields[row_num]
+
 class Cea608Lines:
     """ Which lines the caption formats should read
 
@@ -854,7 +894,7 @@ class Cea608Lines:
         self._rejected = set()
 
     def update(self, row):
-        row_num, byte1, byte2, _ = row
+        row_num, byte1, byte2 = row[:3]
         if byte1 is None:
             return
 
@@ -877,7 +917,7 @@ def decode_cea608_row(row):
     Returns None for a row the spec says to drop: a control code whose second byte
     failed parity.
     """
-    row_num, byte1, byte2, noisy = row
+    row_num, byte1, byte2, noisy = row[:4]
 
     if byte1 is None:
         # the start bits did not check out, so there are no bytes to read
