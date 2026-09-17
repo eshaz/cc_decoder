@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eshaz/cc_decoder/schema/starsight.schema.json",
+  "title": "Decoded StarSight electronic program guide",
+  "type": "object",
+  "required": [
+    "channels",
+    "programs",
+    "listings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "channels": {
+      "description": "Every channel the listings refer to, from the channel field of the Show List commands.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Identifies a channel. Referenced by listings[].channel. From the low 15 bits of bytes 4-5 of a Show List command. It names a position in a line-up rather than a station, so several ids can carry one station and show identical listings.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "callSign": {
+            "description": "The station's call letters. From bytes 8-15 of a Channel Data command, which carry one string of the form CALL-NET; the loader splits it at the first dash from the fourth character on and this is the part before it. Absent unless a Channel Data command was captured, which none so far has been.",
+            "type": "string"
+          },
+          "channelNumber": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 511,
+            "description": "The position the channel is tuned at, 9 bits. From the Region command's lineup entry for this channel, or from byte 6 of a Channel Data command with its top bit in byte 3, which encode it identically. Absent unless one of those was captured."
+          },
+          "showsCallSign": {
+            "const": true,
+            "description": "The receiver should show the call sign rather than the channel number. From bit 1 of byte 5 of a Channel Data command. Omitted when false."
+          },
+          "network": {
+            "description": "The network the station carries, such as CBS. From the part of bytes 8-15 of a Channel Data command after the dash, which the loader looks up in a table of network names. Absent unless a Channel Data command was captured and named one.",
+            "type": "string"
+          },
+          "label": {
+            "description": "A four character short form of the call sign, for a display too narrow for the whole of it. From the four of bytes 8-15 of a Channel Data command that the presence mask in byte 7 selects. Absent unless a Channel Data command was captured.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "themes": {
+      "description": "Every theme the programs refer to, from the theme field of the Show Title commands.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Identifies a genre and subgenre together. Referenced by programs[].theme. From bytes 5-6 of a Show Title command.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "name": {
+            "description": "The genre's label. From the NUL-terminated name in a Theme Category or Theme Sub-Category entry - the only strings in the format that are not compressed. Absent unless one of those commands was captured, which none so far has been.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "programs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Identifies a program. Referenced by listings[].program. From bytes 3-4 of a Show Title command, or bytes 2-3 of a Show List slot. Reused between seasons, so one id names different programs in captures months apart.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048575
+          },
+          "title": {
+            "description": "The program's name. From the compressed text at the end of a Show Title command. Absent when no Show Title for this id was captured.",
+            "type": "string"
+          },
+          "theme": {
+            "description": "The program's genre. References themes[].id. From bytes 5-6 of the same Show Title command that carried the title, so it is absent exactly when the title is.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "closedCaptioned": {
+            "description": "The program is closed captioned. From bit 6 of byte 2 of a Show Title command. Omitted when false.",
+            "type": "boolean",
+            "const": true
+          },
+          "stereo": {
+            "description": "The program is broadcast in stereo. From bit 5 of byte 2 of a Show Title command. Omitted when false.",
+            "type": "boolean",
+            "const": true
+          },
+          "blackAndWhite": {
+            "description": "The program is in black and white. From bit 4 of byte 2 of a Show Title command. Omitted when false.",
+            "type": "boolean",
+            "const": true
+          }
+        }
+      },
+      "description": "One entry per distinct show id, built from the Show Title commands and from the show ids the listings refer to."
+    },
+    "descriptions": {
+      "description": "Synopses, from the Show Description commands. Numbered independently of the programs and reached through listings[].description.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Identifies a description. Referenced by listings[].description. From bytes 3-4 of a Show Description command. Not a show id: the two numberings are separate spaces.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048575
+          },
+          "text": {
+            "description": "The synopsis itself. From the compressed text at the end of a Show Description command.",
+            "type": "string"
+          },
+          "year": {
+            "type": "integer",
+            "minimum": 1900,
+            "maximum": 1999,
+            "description": "The year the program was made. From byte 9 of a Show Description command, which carries the last two digits and is present only on the extended form that bit 3 of the flag byte selects."
+          },
+          "ratingSystem": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7,
+            "description": "Which rating scheme the rating belongs to. Qualifies descriptions[].rating. From the top three bits of byte 7 of a Show Description command, on the extended form only."
+          },
+          "rating": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15,
+            "description": "How the program is rated within ratingSystem. From bits 4-1 of byte 7 of a Show Description command, on the extended form only. Left as the broadcast number because one code means different things in different systems; where a rating has a printable name it already begins the text."
+          },
+          "advisories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true,
+            "description": "What the rating warns about. Qualifies descriptions[].rating. From the bits of byte 8 of a Show Description command, on the extended form only. Omitted when none is set."
+          }
+        }
+      }
+    },
+    "listings": {
+      "description": "The schedule: one entry per slot of the Show List commands, each naming its channel and program by id.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "channel",
+          "start",
+          "durationMinutes",
+          "program",
+          "slotFlags"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "description": "Which channel the program is on. References channels[].id. From bytes 4-5 of the Show List command this slot belongs to.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "start": {
+            "description": "When the slot begins, GMT. From the Show List command's start time in bytes 6-9, advanced by the durations of the slots before this one; a slot itself carries only its length.",
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+          },
+          "durationMinutes": {
+            "description": "How long the slot runs, in whole minutes. From byte 1 of the slot.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "program": {
+            "description": "Which program is on. References programs[].id. From bytes 2-3 of the slot. The entry it names may have no title, meaning no Show Title for it was captured.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1048575
+          },
+          "description": {
+            "description": "The synopsis to show with this program. References descriptions[].id. From the two optional bytes that bit 7 of the slot flags selects. Usually dangles: no capture so far carries both a schedule and the descriptions its slots point at.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "showGroup": {
+            "description": "Groups this slot with others, on a basis not yet known. From the two optional bytes that bit 5 of the slot flags selects. Has appeared once in 43,430 slots.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "payPerView": {
+            "const": true,
+            "description": "The program must be bought to watch. From bit 6 of the slot flag byte. Omitted when false."
+          },
+          "joinedInProgress": {
+            "description": "The program was already running when the list began, so this slot is a placeholder rather than a showing. From bit 0 of the flag byte of a list's first slot. Omitted when false.",
+            "type": "boolean",
+            "const": true
+          },
+          "slotFlags": {
+            "description": "The slot's flag byte as broadcast. From byte 0 of the slot. Kept whole so the four bits no field above names are not lost.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        }
+      }
+    },
+    "clock": {
+      "type": "array",
+      "description": "The station clock, from the Time commands, sent about twice a minute.",
+      "items": {
+        "type": "object",
+        "required": [
+          "time",
+          "utcOffsetMinutes",
+          "daylightSaving"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The instant the station was broadcasting, GMT. From bytes 2-5 of a Time command as minutes since 1992-01-01, plus seconds in byte 7."
+          },
+          "utcOffsetMinutes": {
+            "type": "integer",
+            "description": "The station's standard offset from GMT, in minutes. From bits 0-3 of byte 6 of a Time command as whole hours, made negative by bit 4."
+          },
+          "daylightSaving": {
+            "type": "boolean",
+            "description": "The station's wall clock is an hour ahead of utcOffsetMinutes. From bit 7 of byte 6 of a Time command."
+          }
+        }
+      }
+    },
+    "daylightSavingChanges": {
+      "type": "array",
+      "description": "When the station moves its clock, from the Daylight Saving Change commands. The same pair is repeated unchanged, so it usually appears many times.",
+      "items": {
+        "type": "object",
+        "required": [
+          "starts",
+          "ends"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "starts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When daylight saving begins, GMT. From bytes 2-5 of a Daylight Saving Change command."
+          },
+          "ends": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When daylight saving ends, GMT. From bytes 6-9 of the same command."
+          }
+        }
+      }
+    },
+    "sequenceNumbers": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "description": "Numbers the packets, one per packet, so a gap is a packet that never arrived. From bytes 2-5 of the Sequence Number commands, in the order received. Count loss from consecutive steps rather than from the span, since a flipped bit can move one value by up to 2^31."
+    }
+  },
+  "description": "One StarSight electronic program guide. Six tables of what the broadcast carried: channels, themes, programs and descriptions are referenced by the listings that make up the schedule, while the clock, daylight saving and sequence tables stand on their own. Every value comes from a command in the StarSight packet stream carried on a line of the NTSC vertical blanking interval; nothing here describes the decode itself. Times are GMT and ids are as broadcast. Byte layouts are in docs/starsight.md."
+}

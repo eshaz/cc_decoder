@@ -88,10 +88,12 @@ from lib.cc_decode import (
     decode_to_text,
     decode_to_html,
     decode_captions_debug,
-    extract_closed_caption_bytes,
+    find_and_decode_rows,
+    decode_cea608_rows,
     decode_xds_packets,
     PREAMBLE_RUN_IN_COUNT
 )
+from lib.starsight import decode_starsight
 
 import numpy as np
 
@@ -103,7 +105,8 @@ class ClosedCaptionFileDecoder(object):
                 'html': decode_to_html,
                 'raw': decode_captions_raw,
                 'debug': decode_captions_debug,
-                'xds': decode_xds_packets}
+                'xds': decode_xds_packets,
+                'starsight': decode_starsight}
 
     def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, preamble_run_in_count, debug_plot):
         self.ffmpeg_path = ffmpeg_path
@@ -166,7 +169,7 @@ class ClosedCaptionFileDecoder(object):
             print(" " * len(message) + "\r", end="", file=sys.stderr)
             message = f"Frame: {frame} | Code Count: {code_count} | Rate: {decode_rate:.2f}x"
 
-            for i, (row_num, code, control, b1, _, b2, _) in enumerate(rows):
+            for i, (row_num, code, control, b1, _, b2, _) in enumerate(decode_cea608_rows(rows)):
                 if i == 1:
                     # pad message to consistent width
                     message = message + " " * (max_first_row_len - first_row_len)
@@ -233,7 +236,7 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, start_line, search_lines, min_correlation, debug_plot))
+                tx.send(find_and_decode_rows(image, start_line, search_lines, min_correlation, debug_plot))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -366,13 +369,14 @@ def main():
     output_options.add_argument('--ccformat', metavar='', default='srt', 
                                 help=(
                                     'Specify one or more comma separated output formats (e.g. srt,scc,text) \n'
-                                    '  srt   - SubRip subtitles (default)\n'
-                                    '  scc   - Scenarist Closed Captions\n'
-                                    '  html  - HTML output with styling and colors\n'
-                                    '  text  - Plain text output (TEXT mode only)\n'
-                                    '  xds   - eXtended Data Services (XDS) data\n'
-                                    '  raw   - Raw caption data\n'
-                                    '  debug - Debug output'
+                                    '  srt       - SubRip subtitles (default)\n'
+                                    '  scc       - Scenarist Closed Captions\n'
+                                    '  html      - HTML output with styling and colors\n'
+                                    '  text      - Plain text output (TEXT mode only)\n'
+                                    '  xds       - eXtended Data Services (XDS) data\n'
+                                    '  starsight - StarSight program guide data\n'
+                                    '  raw       - Raw caption data\n'
+                                    '  debug     - Debug output'
                                 )
     )
 
