@@ -88,7 +88,6 @@ from lib.cc_decode import (
     decode_to_text,
     decode_to_html,
     decode_captions_debug,
-    find_and_decode_rows,
     decode_cea608_rows,
     decode_xds_packets,
     PREAMBLE_RUN_IN_COUNT
@@ -107,6 +106,17 @@ class ClosedCaptionFileDecoder(object):
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets,
                 'starsight': decode_starsight}
+
+    # Which service each output format is made of. A line carries one service and is never
+    # shared, so a format is only ever sent the lines that are its own.
+    SERVICES = {'srt': lib.cc_decode.LINE_CAPTIONS,
+                'scc': lib.cc_decode.LINE_CAPTIONS,
+                'text': lib.cc_decode.LINE_CAPTIONS,
+                'html': lib.cc_decode.LINE_CAPTIONS,
+                'raw': lib.cc_decode.LINE_CAPTIONS,
+                'debug': lib.cc_decode.LINE_CAPTIONS,
+                'xds': lib.cc_decode.LINE_CAPTIONS,
+                'starsight': lib.cc_decode.LINE_STARSIGHT}
 
     def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, preamble_run_in_count, debug_plot):
         self.ffmpeg_path = ffmpeg_path
@@ -186,8 +196,41 @@ class ClosedCaptionFileDecoder(object):
             print(message, end="\r", file=sys.stderr)
 
     @staticmethod
-    def image_decoder_worker(
-            tx,
+    def line_decoder_worker(rx, tx, row, image_width, min_correlation,
+                            preamble_run_in_count, debug_plot):
+        setproctitle(multiprocessing.current_process().name)
+
+        lib.cc_decode.PRE_COMPUTED_PREAMBLE_TEMPLATES = \
+            lib.cc_decode.precompute_sine_templates(image_width, preamble_run_in_count)
+
+        service = lib.cc_decode.LineService()
+        image = np.empty((1, image_width), dtype=np.uint8)
+
+        try:
+            while True:
+                pixels = rx.recv()
+                if pixels == "DONE":
+                    break
+
+                image[0] = np.frombuffer(pixels, dtype=np.uint8)
+                service.frame()
+
+                sliced = lib.cc_decode.decode_row(image, 0, min_correlation, debug_plot)
+                if sliced is not None:
+                    _, byte1, byte2, noisy, confidence = sliced
+                    if byte1 is not None:
+                        service.update(byte1, byte2)
+                    sliced = (row, byte1, byte2, noisy, confidence)
+
+                tx.send((sliced, service.service()))
+        except (InterruptedError, KeyboardInterrupt, EOFError):
+            pass
+        finally:
+            tx.send("DONE")
+
+    @staticmethod
+    def image_reader_worker(
+            line_txs,
             image_width,
             image_height,
             input_file,
@@ -195,19 +238,15 @@ class ClosedCaptionFileDecoder(object):
             ffmpeg_pre_scale,
             ffmpeg_hw_accel,
             deinterlaced,
-            start_line,
-            end_line,
-            min_correlation,
-            preamble_run_in_count,
-            debug_plot
+            start_line
     ):
+        """ Read frames and hand each line to the process that owns it """
         setproctitle(multiprocessing.current_process().name)
         try:
             if not os.path.exists(ffmpeg_path):
                 raise RuntimeError('Could not find ffmpeg at %s' % ffmpeg_path)
 
             image_size = image_width * image_height
-            search_lines = end_line - start_line
 
             ffmpeg_cmd = [
                 ffmpeg_path,
@@ -227,24 +266,28 @@ class ClosedCaptionFileDecoder(object):
                 bufsize=image_size
             )
 
-            lib.cc_decode.PRE_COMPUTED_PREAMBLE_TEMPLATES = lib.cc_decode.precompute_sine_templates(image_width, preamble_run_in_count)
-
             while True:
                 image_buffer = fpid.stdout.read(image_size)
                 if len(image_buffer) < image_size:
                     break
 
-                image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
-
-                tx.send(find_and_decode_rows(image, start_line, search_lines, min_correlation, debug_plot))
+                # only the line itself goes down each pipe, not the frame it came from
+                for index, tx in enumerate(line_txs):
+                    at = (start_line + index) * image_width
+                    tx.send(image_buffer[at:at + image_width])
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
-            tx.send("DONE")
+            for tx in line_txs:
+                try:
+                    tx.send("DONE")
+                except:
+                    pass
 
     def decode(self, filename, output_filename):
         running_decoders = []
         running_decoders_conns = []
+        decoder_services = []
         formats = self.format.split(",")
         options = {
             "frame_rate": self.frame_rate
@@ -260,18 +303,35 @@ class ClosedCaptionFileDecoder(object):
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
+                decoder_services.append(self.SERVICES[format])
 
         exception = None
 
         if len(running_decoders) > 0:
             print("Decoding captions...", file=sys.stderr)
             
-            # start ffmpeg and image decoding
-            row_rx, row_tx = multiprocessing.Pipe(False)
+            # one process per line, and one reading frames and handing each line to its own
+            line_processes = []
+            line_results = []
+            line_feeds = []
+            for row in range(self.start_line, self.end_line + 1):
+                pixels_rx, pixels_tx = multiprocessing.Pipe(False)
+                result_rx, result_tx = multiprocessing.Pipe(False)
+                line = multiprocessing.Process(
+                    None, ClosedCaptionFileDecoder.line_decoder_worker,
+                    name=f"cc_decoder_line_{row}",
+                    args=(pixels_rx, result_tx, row, self.image_width,
+                          self.min_correlation, self.preamble_run_in_count, self.debug_plot)
+                )
+                line.start()
+                line_processes.append(line)
+                line_results.append(result_rx)
+                line_feeds.append(pixels_tx)
+
             image_decoder_process = multiprocessing.Process(
-                None, ClosedCaptionFileDecoder.image_decoder_worker, name=f"cc_decoder_image_decoder",
+                None, ClosedCaptionFileDecoder.image_reader_worker, name=f"cc_decoder_image_reader",
                 args=(
-                    row_tx,
+                    line_feeds,
                     self.image_width,
                     self.image_height,
                     filename,
@@ -280,10 +340,6 @@ class ClosedCaptionFileDecoder(object):
                     self.ffmpeg_hw_accel,
                     self.deinterlaced,
                     self.start_line,
-                    self.end_line + 1,
-                    self.min_correlation,
-                    self.preamble_run_in_count,
-                    self.debug_plot,
                 )
             )
             image_decoder_process.start()
@@ -299,13 +355,26 @@ class ClosedCaptionFileDecoder(object):
             try:
                 while True:
                     try:
-                        rows = row_rx.recv()
-                        if rows == "DONE":
+                        # one answer per line per frame, in line order
+                        rows = []
+                        services = []
+                        finished = False
+                        for result_rx in line_results:
+                            answer = result_rx.recv()
+                            if answer == "DONE":
+                                finished = True
+                                break
+                            sliced, service = answer
+                            if sliced is not None:
+                                rows.append(sliced)
+                                services.append(service)
+                        if finished:
                             break
 
-                        # send decoded data to all decoder processes
-                        for conn in running_decoders_conns:
-                            conn.send(rows)
+                        # a format only sees the lines carrying its own service
+                        for conn, wanted in zip(running_decoders_conns, decoder_services):
+                            conn.send([row for row, service in zip(rows, services)
+                                       if service == wanted])
 
                         # send data to status process
                         if not self.quiet:
@@ -317,6 +386,17 @@ class ClosedCaptionFileDecoder(object):
             except Exception as e:
                 exception = e
             finally:
+                # clean up the line processes and the reader feeding them
+                for tx in line_feeds:
+                    try:
+                        tx.send("DONE")
+                    except:
+                        pass
+                for line in line_processes:
+                    line.join(timeout=5)
+                    if line.is_alive():
+                        line.terminate()
+
                 # clean up decoder processes
                 for i in range(len(running_decoders_conns)):
                     try:

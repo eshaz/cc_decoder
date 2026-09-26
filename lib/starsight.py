@@ -125,11 +125,10 @@ COMMAND_SUBSCRIBER_RESET = 13
 COMMAND_SEQUENCE_NUMBER = 20
 COMMAND_STATION_NODE_STATUS = 21
 
-# The nine the loader runs code for that no capture carries. Numbered rather than named:
-# see the decoders further down for what each is read as and why none of them has a name.
-COMMAND_IDENTIFIED_PAYLOAD = 9
-COMMAND_OPAQUE_NOTIFICATION = 10
-COMMAND_MATCHED_KEY = 31
+# The nine the loader runs code for that no capture carries.
+COMMAND_REGION_NAME = 9
+COMMAND_CYCLE_START = 10
+COMMAND_POSTAL_CODE = 31
 COMMAND_SEGMENTED = 36
 COMMAND_ADDRESSED = 37
 COMMAND_KEYED_RECORD = 38
@@ -140,10 +139,11 @@ COMMAND_GATE = 42
 COMMAND_NAMES = {
     1: 'Time',              2: 'Daylight Saving Change', 3: 'Region',
     4: 'Channel Data',      5: 'Show List',              6: 'Show Title',
-    8: 'Show Description', 11: 'Theme Category',        12: 'Theme Sub-Category',
-    13: 'Subscriber Reset',14: 'Authorization',         17: 'Key Distribution',
-    20: 'Sequence Number', 21: 'Station Node Status',   22: 'Long Assign IR Codes',
-    24: 'Subscriber Unit',
+    8: 'Show Description', 9: 'Region Name',            10: 'Cycle Start',
+    11: 'Theme Category',  12: 'Theme Sub-Category',    13: 'Subscriber Reset',
+    14: 'Authorization',   17: 'Key Distribution',      20: 'Sequence Number',
+    21: 'Station Node Status', 22: 'Long Assign IR Codes', 24: 'Subscriber Unit',
+    31: 'Postal Code',     36: 'Segmented Command',
 }
 
 # A string is sent compressed unless compressing it would make it longer, so most of
@@ -155,18 +155,38 @@ COMPRESSED_FLAG = 0x80
 DESCRIPTION_EXTENDED = 0x08
 
 # Byte 8 of the extended form. SSLOAD.DLL scatters these five bits through a record of
-# its own and reads them back against the strings below; they are the vocabulary it uses
-# when the rating system carries advisories as flags rather than as text. Bits 0, 5 and 6
-# are set by nothing in any capture.
+# its own and reads them back against the strings below. It carries bit 0 as well and never
+# shows it, and reads neither 5 nor 6; none of the three is set in any capture.
 ADVISORY_NAMES = ((0x02, 'nudity'), (0x04, 'violence'), (0x08, 'adult situations'),
                   (0x10, 'adult themes'), (0x80, 'adult language'))
 
-# Byte 7 of the extended form: a rating system above a rating within that system.
-RATING_SYSTEM_SHIFT = 5
+# Byte 7 of the extended form: a critic's star rating above a film rating. SSLOAD.DLL
+# writes the stars into the description as that many '*', and they follow the films in
+# docs/samples: The Best Years of Our Lives, Lifeboat and The King and I have 4, Sheena 1.
+RATING_STARS_SHIFT = 5
 RATING_CODE_SHIFT = 1
 RATING_CODE_MASK = 0x0F
 
-ShowRating = namedtuple('ShowRating', 'system code advisories year')
+# The film rating. The captures
+# agree on 0, 1 and 3-5: Rapa Nui and Thinner are 5, The Evening Star 4, Silent Movie 3,
+# The Neptune Factor 1. Every title carrying 2 is an adult film.
+RATING_NAMES = ('NR', 'G', 'NC-17', 'PG', 'PG-13', 'R', 'NC-17', 'NC-17')
+
+ShowRating = namedtuple('ShowRating', 'stars code advisories year')
+
+def rating_name(rating):
+    return RATING_NAMES[rating.code] if rating.code < len(RATING_NAMES) else None
+
+# A TV Parental Guidelines rating opens the description text itself, the way the April
+# capture sends it on 96 of its 233: TVG 41, TVPG 36, TV14 9, TVM 6, TVY 4. SSLOAD.DLL
+# looks for the hyphenated names Microsoft's table maps, and TV-M became TV-MA in 1997.
+TV_RATINGS = {'TVY': 'TV-Y', 'TVY7': 'TV-Y7', 'TVG': 'TV-G', 'TVPG': 'TV-PG',
+              'TV14': 'TV-14', 'TVM': 'TV-MA', 'TVMA': 'TV-MA'}
+
+def tv_rating(text):
+    """ The TV rating a description opens with, or None """
+    word = text.split(' ', 1)[0] if text else ''
+    return TV_RATINGS.get(word.replace('-', ''))
 
 def description_advisories(advisories):
     """ The content advisories named by the extended form's byte 8 """
@@ -195,67 +215,6 @@ SLOT_JOINED_IN_PROGRESS = 0x01
 # what they look like: the bits an error can flip without changing a slot's length and so
 # without failing the packet's tiling check.
 SLOT_UNNAMED = 0x1E
-
-
-class StarSightLines:
-    """ Which lines are carrying StarSight rather than captions
-
-    The mirror of `Cea608Lines`, over the same measurement: a caption line passes odd
-    parity on very nearly every field, while StarSight uses that eighth bit for data
-    and so passes at chance. A line is taken only once its rate has actually been
-    measured, so a caption line is never read as guide data while the counts build.
-
-    This cannot be replaced by letting the packet parser sort the lines out. Measured
-    over the April capture, where the guide is on rows 0 and 1 at parity rates 0.238
-    and 0.232 and the captions are on rows 14 and 15 at 1.000: buffering both guide
-    rows gives 58 packets, and **every other combination of rows gives none at all** -
-    either row on its own, every other pair, and all four together. The stream is one
-    byte sequence alternating between the two fields of a single VBI line, which
-    `weave` puts on adjacent rows, so it has to be read from both in order, and one
-    caption byte mixed in destroys the framing for good. Finding that pair by trying
-    subsets would mean 2^n parses; the parity rate names it in about twenty fields.
-
-    Parity alone is not enough, because a line of noise that merely correlated with the
-    preamble also fails parity at chance and so looks exactly like guide data. What
-    tells them apart is how often the line is there at all: the guide is transmitted on
-    every field, while noise only occasionally clears the correlation threshold. So a
-    line is taken only if it has also decoded on at least half the fields seen. Measured
-    on the April capture with the correlation threshold lowered to 0.3, three noise rows
-    joined the two real ones and the interleaved garbage cut the packets that passed
-    both checksums from 101 to 15; the presence test rejects all three - they decode on
-    1 to 15 per cent of fields against the guide's 100 - and restores the full 101.
-    """
-
-    MAX_PARITY_RATE = 0.75
-    MIN_PRESENCE_RATE = 0.5
-
-    def __init__(self):
-        self._parity = LineParityRate()
-        self._frames = 0
-        self._accepted = set()
-
-    def frame(self):
-        """ One more frame has been sliced, whether or not any line decoded on it """
-        self._frames += 1
-
-    def update(self, row_num, byte1, byte2):
-        self._parity.update(row_num, byte1, byte2)
-        rate = self._parity.rate(row_num)
-        if rate is None:
-            return
-
-        present = self._parity.seen(row_num) >= self.MIN_PRESENCE_RATE * self._frames
-        if rate < self.MAX_PARITY_RATE and present:
-            self._accepted.add(row_num)
-        else:
-            self._accepted.discard(row_num)
-
-    def accepts(self, row_num):
-        return row_num in self._accepted
-
-    def accepted(self):
-        """ The lines being read, in row order """
-        return sorted(self._accepted)
 
 
 def starsight_time(minutes):
@@ -619,9 +578,9 @@ def decode_show_description(command):
     """ `(description id, rating, description)` - text is None when it was undecodable
 
     Bit 3 of the flags selects an extended form that puts three more bytes in front of
-    the text: byte 7 is a rating system in its top three bits and a rating within that
-    system below it, byte 8 is a set of content advisory bits, and byte 9 is the last two
-    digits of the year. The text then begins at 10 rather than 7. Reading it from 7
+    the text: byte 7 is a star rating in its top three bits and a film rating below it,
+    byte 8 is a set of content advisory bits, and byte 9 is the last two digits of the
+    year. The text then begins at 10 rather than 7. Reading it from 7
     regardless garbled 55 of the April capture's 233 descriptions, turning 'TVG Three
     World War II veterans come home' into 'ennhG, caLento skrting aioaens  II veterans
     come home'. `rating` is None on the plain form.
@@ -631,7 +590,7 @@ def decode_show_description(command):
         return _u16(command, 3), None, decode_starsight_string(flags, command[7:])
 
     # byte 9 is the last two digits; zero is how the extended form says it has none
-    rating = ShowRating(command[7] >> RATING_SYSTEM_SHIFT,
+    rating = ShowRating(command[7] >> RATING_STARS_SHIFT,
                         (command[7] >> RATING_CODE_SHIFT) & RATING_CODE_MASK,
                         command[8], 1900 + command[9] if command[9] else None)
     return _u16(command, 3), rating, decode_starsight_string(flags, command[10:])
@@ -802,24 +761,19 @@ def decode_channel_data(command):
     return ChannelData(channel, number, call_sign, network, label,
                        bool(command[5] & CHANNEL_SHOWS_CALL_SIGN))
 
-# Theme Category and Theme Sub-Category, types 11 and 12. Both carry a version byte that
-# the loader compares against the one it stored, reloading everything when it changes, then
-# a count, then that many variable length entries. A name is a plain NUL terminated string,
-# not Huffman coded - these are the only strings in the format that are not compressed.
+# Theme Category and Theme Sub-Category, types 11 and 12. A category
+# is an id and a NUL terminated name, under a version the loader reloads on. A sub-category
+# belongs to the category its byte 3 names and lists the theme ids a Show Title carries, so
+# it is what names a theme. These are the only strings in the format that are not compressed.
 THEME_ENTRIES_AT = 5
 THEME_ENTRY_HEADER = 3
 
 def decode_theme_names(command):
-    """ `(version, [(id, name)])` from a Theme Category or Sub-Category command
-
-    Read from SSLOAD.DLL's type 11 and 12 handlers, which walk the entries identically.
-    No capture contains either command, so this is unconfirmed against a broadcast; it is
-    what would fill `themes[].name`.
-    """
+    """ `(version, [(id, name)])` from a Theme Category command """
     if len(command) <= THEME_ENTRIES_AT:
         return None
     version = command[3]
-    count = command[4] & 0x7F
+    count = command[4]
 
     entries = []
     offset = THEME_ENTRIES_AT
@@ -830,6 +784,27 @@ def decode_theme_names(command):
         entries.append((identifier, name))
         offset += THEME_ENTRY_HEADER + length
     return version, entries
+
+def decode_theme_sub_categories(command):
+    """ `(category id, [(name, [theme id])])` from a Theme Sub-Category command
+
+    An entry is its own length, a flag byte, a count of theme ids, the ids, and the name
+    in what is left of the length.
+    """
+    if len(command) <= THEME_ENTRIES_AT:
+        return None
+
+    entries = []
+    offset = THEME_ENTRIES_AT
+    while len(entries) < command[4] & 0x7F and offset + THEME_ENTRY_HEADER <= len(command):
+        length, count = command[offset], command[offset + 2]
+        if length < THEME_ENTRY_HEADER + count * 2 or offset + length > len(command):
+            break
+        themes = [_u16(command, offset + THEME_ENTRY_HEADER + i * 2) for i in range(count)]
+        name = bytes(command[offset + THEME_ENTRY_HEADER + count * 2:offset + length])
+        entries.append((name.split(b'\0')[0].decode('latin1'), themes))
+        offset += length
+    return command[3], entries
 
 # A Region command's own header, then four bytes per channel in its lineup.
 REGION_APPLY_NOW = 0x01
@@ -882,51 +857,44 @@ def decode_region(command):
 
 # --- the nine types the loader runs code for and no capture carries ------------------
 #
-# What follows is the structure SSLOAD.DLL reads out of each, and not what any of it means.
-# They are named by number for that reason: nothing here is confirmed against a broadcast,
-# and the patents describe none of them.
-#
-# They are not nine independent messages. The loader keeps a state byte (image offset
-# 0x1AB00) and a flag byte (0x1AB34), and they gate each other: type 31 advances the state
-# to 2 when its key matches, type 9 acts only in state 2, type 42 sets or clears the flag,
-# and types 36 and 37 act only in state 3 with that flag set. So this is a sequence a
-# receiver is walked through, which is consistent with a capture of half an hour catching
-# none of it - the first step is addressed to one receiver by a key it has to already know.
+# The loader keeps a state byte (image offset 0x1AB00) and a flag byte (0x1AB34). The region
+# setup in BPCCTL.DLL starts in state 1 with the viewer's postal code, a type 31 for that
+# code moves it to 2, and only then are type 9 names kept. SSLOAD.DLL starts in state 3 with
+# the region id the setup saved, and there Region, Channel Data, Show List, both theme
+# commands and types 36 and 37 act only while type 42's flag is on.
 
+RegionName = namedtuple('RegionName', 'region name')
+PostalCode = namedtuple('PostalCode', 'code broadcast cable trailer')
+Segment = namedtuple('Segment', 'message part last data')
 TypedPayload = namedtuple('TypedPayload', 'identifier payload')
-AddressedCommand = namedtuple('AddressedCommand', 'nibble addresses payload')
+AddressedCommand = namedtuple('AddressedCommand', 'version regions day entries')
 KeyedRecord = namedtuple('KeyedRecord', 'identifier flags parts')
 TimedRecord = namedtuple('TimedRecord', 'identifier value when trailer')
-MatchedKey = namedtuple('MatchedKey', 'key first second trailer')
 
-def decode_identified_payload(command):
-    """ `(id, payload)` from a type 9 command
+def decode_region_name(command):
+    """ `(region id, name)` from a Region Name command
 
-    Byte 1 is the length, bytes 2-3 an id, and the rest is handed on whole. The loader will
-    not look at one at all until a type 31 command has advanced its state, which is why
-    this is gated rather than simply rare.
+    The name is always compressed; BPCCTL.DLL decodes it, up to 34 characters, for the list
+    of regions it offers. None when it does not decode.
     """
     if len(command) < 4 or command[1] < 4:
         return None
-    return TypedPayload(_u16(command, 2), bytes(command[4:command[1]]))
+    return RegionName(_u16(command, 2), decompress_starsight_string(command[4:command[1]]))
 
-def decode_opaque_notification(command):
-    """ The nine bytes a type 10 command carries
+def decode_cycle_start(command):
+    """ The nine bytes of a Cycle Start command
 
-    The loader does not parse them. It passes the command to whatever callback the host
-    application registered, tagged with its own type, and that is all - so the meaning
-    lives in the application and not in the format.
+    SSSCAN.EXE counts these to know it has watched a whole carousel and reads none of the
+    bytes; the loader hands them to the host application unread.
     """
     return bytes(command[:9]) if len(command) >= 9 else None
 
-def decode_matched_key(command):
-    """ `(key, first table, second table, trailer)` from a type 31 command
+def decode_postal_code(command):
+    """ `(postal code, broadcast regions, cable regions, trailer)` from a Postal Code command
 
-    Bytes 3-8 are a six byte key which the loader compares against one it already holds and
-    ignores the command unless they are equal - so this is addressed to a single receiver.
-    What follows are two tables of two byte entries, counted by bytes 10 and 11, and two
-    bytes after them. A command that matches advances the loader's state, which is what
-    lets a type 9 command through.
+    Bytes 3-8 are the code as text. The commands go out in its sort order, which is how
+    SSSCAN.EXE knows it has passed the viewer's own. Bytes 10 and 11 count two tables of
+    region ids, the lineups BPCCTL.DLL offers for an antenna and for cable.
     """
     if len(command) < 12:
         return None
@@ -938,35 +906,68 @@ def decode_matched_key(command):
     second = [_u16(command, at + i * 2) for i in range(second_count)
               if at + i * 2 + 2 <= len(command)]
     at += second_count * 2
-    return MatchedKey(bytes(command[3:9]), first, second, bytes(command[at:at + 2]))
+    return PostalCode(bytes(command[3:9]).split(b'\0')[0].decode('latin1'), first, second,
+                      bytes(command[at:at + 2]))
 
 def decode_segmented(command):
-    """ `(id, payload)` from a type 36 command, which arrives in parts
+    """ `(message, part, last part, data)` from a Segmented Command
 
-    Byte 4 numbers the message and the high nibble of byte 3 the part. The loader holds a
-    partial message and abandons it when byte 4 changes, so the parts of one message have
-    to arrive together and in order.
+    Byte 4 numbers the message, and the high and low nibbles of byte 3 the part and the last
+    part. `join_segments` puts the parts back together.
     """
     if len(command) < 5:
         return None
-    return TypedPayload(command[4], bytes(command[5:]))
+    return Segment(command[4], command[3] >> 4, command[3] & 0x0F, bytes(command[5:]))
+
+# The loader will not assemble a segmented command longer than this.
+STARSIGHT_MAX_SEGMENTED = 3000
+
+def join_segments(guide, segment):
+    """ The command a Segmented Command completes, or None
+
+    The parts have to arrive in order from 0, and a part of another message abandons the one
+    held. The first begins with the command's own header and the last ends with a CRC over
+    the whole, which has to check as a packet body's does.
+    """
+    held = guide['segmented']
+    if held is not None and held.message != segment.message:
+        held = None
+    if held is None:
+        if segment.part or len(segment.data) < 3 \
+                or _u16(segment.data, 1) + STARSIGHT_TRAILER > STARSIGHT_MAX_SEGMENTED:
+            guide['segmented'] = None
+            return None
+        held = Segment(segment.message, 0, segment.last, b'')
+    elif (segment.part, segment.last) != (held.part, held.last):
+        guide['segmented'] = None
+        return None
+
+    data = held.data + segment.data
+    if segment.part < segment.last:
+        guide['segmented'] = Segment(held.message, segment.part + 1, held.last, data)
+        return None
+    guide['segmented'] = None
+    return data[:-STARSIGHT_TRAILER] if starsight_crc(data) == 0 else None
 
 def decode_addressed(command):
-    """ `(nibble, addresses, payload)` from a type 37 command
+    """ `(version, regions, day, [(byte, value)])` from a type 37 command
 
-    Bytes 4-5 count a table of two byte addresses that starts at byte 6, and the loader
-    reads no further unless its own address is in that table. Everything after the table is
-    for the receivers it names. The low nibble of byte 3 is carried alongside.
+    Bytes 4-5 count a table of region ids from byte 6, and the loader reads no further unless
+    its own region is among them. After the table come the midnight the command is for, one
+    of the next seven, and a count of three byte entries. The low nibble of byte 3 is a
+    version; a day already held at that version is skipped.
     """
     if len(command) < 6:
         return None
     count = _u16(command, 4)
     at = 6 + count * 2
-    if at > len(command):
+    if at + 5 > len(command):
         return None
+    entries = [(command[i], _u16(command, i + 1))
+               for i in range(at + 5, at + 5 + command[at + 4] * 3, 3) if i + 3 <= len(command)]
     return AddressedCommand(command[3] & 0x0F,
                             [_u16(command, 6 + i * 2) for i in range(count)],
-                            bytes(command[at:]))
+                            starsight_time(_u32(command, at)), entries)
 
 def decode_keyed_record(command):
     """ `(id, flags, three payloads)` from a type 38 command
@@ -1013,8 +1014,8 @@ def _summarise_parts(record):
         record.identifier, ' '.join('%02x' % f for f in record.flags),
         ' '.join(str(len(part)) for part in record.parts))
 
-# Bits 4-5 of byte 8 of a type 42 command. The loader sets a flag for 0, clears it for 1
-# and ignores the command for 2 and 3; types 36 and 37 do nothing while that flag is clear.
+# Bits 4-5 of byte 8 of a type 42 command. The loader clears its flag for 0, sets it for 1
+# and ignores the command for 2 and 3.
 TYPE_42_SETTING = 0x30
 TYPE_42_SETTING_SHIFT = 4
 
@@ -1026,26 +1027,24 @@ def decode_gate(command):
     if len(command) < 9:
         return None
     setting = (command[8] & TYPE_42_SETTING) >> TYPE_42_SETTING_SHIFT
-    return {0: True, 1: False}.get(setting)
+    return {0: False, 1: True}.get(setting)
 
-# Each of the nine, with a one line summary for the log. Kept together so the dispatch is
-# one lookup rather than nine branches that would all say the same thing.
-UNNAMED_DECODERS = {
-    COMMAND_IDENTIFIED_PAYLOAD: (decode_identified_payload,
-                                 lambda d: 'id %-6d %d byte%s' % (
-                                     d.identifier, len(d.payload),
-                                     '' if len(d.payload) == 1 else 's')),
-    COMMAND_OPAQUE_NOTIFICATION: (decode_opaque_notification,
-                                  lambda d: 'for the application, %s' % d.hex()),
-    COMMAND_MATCHED_KEY: (decode_matched_key,
-                          lambda d: 'key %s, %d and %d entries' % (
-                              d.key.hex(), len(d.first), len(d.second))),
-    COMMAND_SEGMENTED: (decode_segmented,
-                        lambda d: 'message %-4d %d bytes' % (d.identifier, len(d.payload))),
+# Those of the nine with no more to them than a line in the log, and its summary. Kept
+# together so the dispatch is one lookup rather than eight branches.
+LOADER_DECODERS = {
+    COMMAND_REGION_NAME: (decode_region_name,
+                          lambda d: 'region %-6d %s' % (
+                              d.region, d.name if d.name is not None else '(undecodable)')),
+    COMMAND_CYCLE_START: (decode_cycle_start, lambda d: d.hex()),
+    COMMAND_POSTAL_CODE: (decode_postal_code,
+                          lambda d: 'code %-6s %d broadcast and %d cable region%s' % (
+                              d.code, len(d.broadcast), len(d.cable),
+                              '' if len(d.cable) == 1 else 's')),
     COMMAND_ADDRESSED: (decode_addressed,
-                        lambda d: '%d address%s, %d bytes for them' % (
-                            len(d.addresses), '' if len(d.addresses) == 1 else 'es',
-                            len(d.payload))),
+                        lambda d: '%d region%s, %s, %d entr%s' % (
+                            len(d.regions), '' if len(d.regions) == 1 else 's',
+                            d.day.strftime('%Y-%m-%d'), len(d.entries),
+                            'y' if len(d.entries) == 1 else 'ies')),
     COMMAND_KEYED_RECORD: (decode_keyed_record, _summarise_parts),
     COMMAND_TIMED_RECORD: (decode_timed_record,
                            lambda d: 'id %-6d value %-6d field %d' % (
@@ -1057,14 +1056,16 @@ UNNAMED_DECODERS = {
     COMMAND_GATE: (decode_gate, lambda d: 'flag %s' % ('on' if d else 'off')),
 }
 
-SUBSCRIBER_RESET_ACTIONS = ((0x01, 'clear stored guide'), (0x02, 'clear stored settings'))
+SUBSCRIBER_RESET_ACTIONS = ((0x01, 'clear stored guide'),
+                            (0x02, 'clear stored guide and stop loading'))
 
 def decode_subscriber_reset(command):
     """ What a Subscriber Reset command asks a receiver to discard
 
-    SSLOAD.DLL's type 13 handler tests two bits of byte 2 and calls a different routine for
-    each; the names below are what those routines appear to do and are the least certain
-    thing in this file. Unconfirmed against a broadcast.
+    SSLOAD.DLL's type 13 handler clears its lineup, schedules and themes for either bit of
+    byte 2, and for bit 1 then ignores guide commands until it is restarted. It acts only
+    when bytes 3-7 are zero or its own address, which it never sets. Unconfirmed against a
+    broadcast.
     """
     if len(command) < 3:
         return None
@@ -1086,8 +1087,8 @@ def _rating_note(rating):
     if rating is None:
         return ''
     advisories = description_advisories(rating.advisories)
-    return '%s system %d rating %-2d%s  ' % (
-        rating.year or '----', rating.system, rating.code,
+    return '%s %-5s %-4s%s  ' % (
+        rating.year or '----', rating_name(rating) or rating.code, '*' * rating.stars,
         ' (%s)' % ', '.join(advisories) if advisories else '')
 
 def _slot_line(label, channel, start, minutes, show_id, title):
@@ -1103,13 +1104,14 @@ def new_guide():
     """
     return {'pending': {}, 'slots': [], 'blocks': {}, 'titles': {}, 'descriptions': {},
             'clock': [], 'daylight': [], 'sequence': [], 'station': [],
-            'channel_data': {}, 'theme_names': {}, 'regions': [], 'resets': [],
+            'channel_data': {}, 'theme_names': {}, 'theme_categories': {},
+            'regions': [], 'resets': [],
             # channel id -> the number it sits on, as the Region command's lineup gives it
             'lineup': {},
             'unnamed': Counter(), 'packets': [], 'undecodable': Counter(),
-            # the nine the loader implements and nothing here can name, kept by type so a
-            # capture that ever carries one has somewhere to put it
-            'unnamed_commands': defaultdict(list)}
+            # the loader's other types, kept by type so a capture that ever carries one
+            # has somewhere to put it, and a Segmented Command still being put together
+            'loader_commands': defaultdict(list), 'segmented': None}
 
 def describe_starsight_command(command_type, command, guide):
     """ The lines one command contributes to the log, in broadcast order
@@ -1121,6 +1123,12 @@ def describe_starsight_command(command_type, command, guide):
     names, which is the moment a receiver could first have shown that entry. Everything
     is also kept in `guide` so the HTML listing can be assembled at the end.
     """
+    # The loader runs no handler for a command with bit 7 of byte 0 set. None of the 9,648
+    # commands in docs/samples has it.
+    if command[0] & 0x80:
+        return ['Type %-8d %d bytes (bit 7 set, which the loader ignores)' % (
+            command_type, len(command))]
+
     if command_type == COMMAND_SHOW_TITLE:
         show_id, theme, title = decode_show_title(command)
         lines = ['Show Title   id %-7d theme %-6d %s' % (
@@ -1179,15 +1187,27 @@ def describe_starsight_command(command_type, command, guide):
             channel.channel, channel.number, channel.call_sign or '(no call sign)',
             ' (%s)' % channel.network if channel.network else '')]
 
-    if command_type in (COMMAND_THEME_CATEGORY, COMMAND_THEME_SUB_CATEGORY):
+    if command_type == COMMAND_THEME_CATEGORY:
         named = decode_theme_names(command)
         if named is None:
             return []
         version, entries = named
-        for identifier, name in entries:
-            guide['theme_names'][identifier] = name
+        guide['theme_categories'].update(entries)
         return ['%-12s version %-4d %d name%s' % (
             COMMAND_NAMES[command_type], version, len(entries),
+            '' if len(entries) == 1 else 's')]
+
+    if command_type == COMMAND_THEME_SUB_CATEGORY:
+        named = decode_theme_sub_categories(command)
+        if named is None:
+            return []
+        category, entries = named
+        parent = guide['theme_categories'].get(category)
+        for name, themes in entries:
+            for theme in themes:
+                guide['theme_names'][theme] = '%s / %s' % (parent, name) if parent else name
+        return ['%-12s category %-4d %d name%s' % (
+            COMMAND_NAMES[command_type], category, len(entries),
             '' if len(entries) == 1 else 's')]
 
     if command_type == COMMAND_REGION:
@@ -1209,13 +1229,24 @@ def describe_starsight_command(command_type, command, guide):
         guide['resets'].append(tuple(actions))
         return ['Reset        %s' % (', '.join(actions) or 'nothing')]
 
-    if command_type in UNNAMED_DECODERS:
-        decoded = UNNAMED_DECODERS[command_type][0](command)
+    if command_type == COMMAND_SEGMENTED:
+        segment = decode_segmented(command)
+        if segment is None:
+            return []
+        joined = join_segments(guide, segment)
+        lines = ['%-12s message %-4d part %d of %d' % (
+            COMMAND_NAMES[command_type], segment.message, segment.part + 1, segment.last + 1)]
+        if joined is not None:
+            lines += describe_starsight_command(joined[0] & 0x3F, joined, guide)
+        return lines
+
+    if command_type in LOADER_DECODERS:
+        decoded = LOADER_DECODERS[command_type][0](command)
         if decoded is None:
             return []
-        guide['unnamed_commands'][command_type].append(decoded)
-        return ['type %-2d      %s' % (command_type,
-                                       UNNAMED_DECODERS[command_type][1](decoded))]
+        guide['loader_commands'][command_type].append(decoded)
+        return ['%-12s %s' % (COMMAND_NAMES.get(command_type, 'type %d' % command_type),
+                              LOADER_DECODERS[command_type][1](decoded))]
 
     if command_type == COMMAND_STATION_NODE_STATUS:
         # The station's own health, every five or ten minutes. Its length is not fixed:
@@ -1615,15 +1646,20 @@ def _channel_entry(channel, data, lineup=None):
 def _description_entry(description_id, text, rating):
     """ One Show Description, with whatever its extended form carried
 
-    The rating fields are written as the broadcast numbered them. SSLOAD.DLL keeps the
-    same two numbers and never maps them to a name from the wire - where a rating has a
-    printable name it is already at the front of the text, which is where the loader
-    reads it from too.
+    `rating` is the code as broadcast and `ratingName` what Microsoft's guide showed for
+    it. A description ending ' (R).' is a rerun, which is how SSLOAD.DLL sets `TS Rerun`;
+    10 of the 233 in docs/samples end that way.
     """
     entry = {'id': description_id, 'text': text}
+    if text is not None and text.endswith(' (R).'):
+        entry['rerun'] = True
+    if tv_rating(text):
+        entry['tvRating'] = tv_rating(text)
     if rating is not None:
-        entry['ratingSystem'] = rating.system
+        entry['stars'] = rating.stars
         entry['rating'] = rating.code
+        if rating_name(rating):
+            entry['ratingName'] = rating_name(rating)
         if rating.year:
             entry['year'] = rating.year
         advisories = description_advisories(rating.advisories)
@@ -1739,11 +1775,12 @@ def read_starsight_json(document):
 
     for entry in document.get('descriptions', ()):
         rating = None
-        if 'ratingSystem' in entry:
+        if 'rating' in entry:
             named = set(entry.get('advisories', ()))
             advisories = sum(mask for mask, name in ADVISORY_NAMES if name in named)
-            rating = ShowRating(entry['ratingSystem'], entry['rating'], advisories,
-                                entry.get('year'))
+            # documents written before the stars were identified call them ratingSystem
+            rating = ShowRating(entry.get('stars', entry.get('ratingSystem')), entry['rating'],
+                                advisories, entry.get('year'))
         guide['descriptions'][entry['id']] = (entry['text'], rating)
 
     for listing in document.get('listings', ()):
@@ -1932,13 +1969,15 @@ def write_starsight_html(output_filename, guide, counts=None):
 
     _table(out_func, 'showdesc', 'Show Description',
            'Numbered separately from the show numbers above; a Show List slot points at '
-           'one through the optional field its flags select. Year, rating and advisories '
-           'come from the extended form of the command and are blank on the plain one.',
-           (('Description number', 'num'), ('Year', 'num'), ('Rating system', 'num'),
-            ('Rating', 'num'), ('Advisories', 'wrap'), ('Description', 'wrap')),
+           'one through the optional field its flags select. Year, stars, rating and '
+           'advisories come from the extended form of the command and are blank on the '
+           'plain one.',
+           (('Description number', 'num'), ('Year', 'num'), ('Stars', ''),
+            ('Rating', ''), ('Advisories', 'wrap'), ('Description', 'wrap')),
            [(description_id,
              rating.year if rating and rating.year else '',
-             rating.system if rating else '', rating.code if rating else '',
+             '*' * rating.stars if rating else '',
+             (rating_name(rating) or rating.code) if rating else '',
              esc(', '.join(description_advisories(rating.advisories))) if rating else '',
              esc(text))
             for description_id, (text, rating) in sorted(descriptions.items())])
@@ -1988,7 +2027,7 @@ def decode_starsight(rx, output_filename, options):
     """
     setproctitle(current_process().name)
 
-    lines = StarSightLines()
+    lines = set()
     buffer = bytearray()
     confidence = []
     lost = []
@@ -2012,21 +2051,20 @@ def decode_starsight(rx, output_filename, options):
             break
 
         frame += 1
-        lines.frame()
 
         decoded = {}
         for row_num, byte1, byte2, _, certainty in rows:
             if byte1 is None:
                 continue
 
-            lines.update(row_num, byte1, byte2)
+            lines.add(row_num)
             decoded[row_num] = (byte1, byte2, certainty)
 
         # A line that did not slice leaves a hole rather than nothing at all. Dropping
         # its two bytes would shorten the packet they fall in and shift everything after
         # them, which is what used to cost the 1994 capture all but three of its packets;
         # held open, the hole is two unknown bytes the body checksum can solve for.
-        for row_num in lines.accepted():
+        for row_num in sorted(lines):
             if row_num in decoded:
                 byte1, byte2, certainty = decoded[row_num]
                 buffer += bytes((byte1, byte2))
