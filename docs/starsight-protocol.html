@@ -1,0 +1,625 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>StarSight protocol</title>
+<style>
+:root{color-scheme:light dark;
+ --ink:#17181c;--ground:#fbfbf9;--rule:#d6d5cf;--zebra:#f5f4f0;--head:#efeee8;--dim:#5b5f68;
+ --measured-bg:#d8ead6;--measured-ink:#1d4a19;
+ --loader-bg:#e4e0f2;--loader-ink:#332a63;
+ --patent-bg:#f2e6cf;--patent-ink:#5c4413}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+ --ink:#e6e6e3;--ground:#16171a;--rule:#35383f;--zebra:#1d1f23;--head:#24262b;--dim:#a8abb3;
+ --measured-bg:#1f3a1c;--measured-ink:#b7ddb2;
+ --loader-bg:#2a2450;--loader-ink:#c6bef0;
+ --patent-bg:#43331a;--patent-ink:#e6cf9f}}
+:root[data-theme="dark"]{
+ --ink:#e6e6e3;--ground:#16171a;--rule:#35383f;--zebra:#1d1f23;--head:#24262b;--dim:#a8abb3;
+ --measured-bg:#1f3a1c;--measured-ink:#b7ddb2;
+ --loader-bg:#2a2450;--loader-ink:#c6bef0;
+ --patent-bg:#43331a;--patent-ink:#e6cf9f}
+*{box-sizing:border-box}
+body{font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:0;padding-block:2rem;
+ padding-inline:16px;color:var(--ink);background:var(--ground)}
+main{max-width:64rem;margin:0 auto}
+h1{font-size:1.5rem;margin:0 0 .25rem;text-wrap:balance}
+h2{font-size:1.1rem;margin:2.5rem 0 .25rem;text-wrap:balance}
+h3{font-size:.95rem;margin:1.5rem 0 .25rem;font-weight:600}
+p{margin:.25rem 0 1rem;max-width:44rem;color:var(--dim)}
+table{border-collapse:collapse;margin:0 0 1rem;width:100%;display:block;overflow-x:auto}
+th,td{border:1px solid var(--rule);padding:.25rem .5rem;text-align:left;
+ vertical-align:top;white-space:normal}
+th{background:var(--head);font-weight:600;white-space:nowrap}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:nth-child(even) td{background:var(--zebra)}
+code{background:var(--head);padding:0 .2em}
+s{text-decoration:none;display:inline-block;padding:0 .45em;border-radius:3px;
+ font-size:.85em;white-space:nowrap}
+s.measured{background:var(--measured-bg);color:var(--measured-ink)}
+s.loader{background:var(--loader-bg);color:var(--loader-ink)}
+s.patent{background:var(--patent-bg);color:var(--patent-ink)}
+</style></head><body><main>
+<h1>The StarSight protocol</h1>
+<p>Everything <code>cc_decoder</code> knows about the StarSight Data Transmission Network, carried on a line of the NTSC vertical blanking interval. This is the reference; <code>docs/starsight.md</code> is the account of how it was worked out.</p>
+<h2>How to read this</h2>
+<p>Every row says where it came from. Three sources, in the order they are trusted.</p>
+<table><thead><tr><th>Source</th><th>What it means</th></tr></thead><tbody>
+<tr><td><s class="measured">measured</s></td><td>Confirmed against the captures, byte for byte.</td></tr>
+<tr><td><s class="loader">loader</s></td><td>Read from SSLOAD.DLL&#x27;s own code. No capture contains this, so the layout is as the loader reads it and has not been seen on a wire.</td></tr>
+<tr><td><s class="patent">patent</s></td><td>Described in the StarSight patents. Neither measured nor present in the loader.</td></tr>
+</tbody></table>
+<h2 id='packet'>Packet</h2><p>Byte offsets from the sync.</p>
+<table><thead><tr><th>Offset</th><th>Bytes</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td class="num">0</td><td class="num">1</td><td>sync</td><td>Always 0x2C.</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">1</td><td class="num">2</td><td>size</td><td>Whole packet in bytes, this header and the trailer included, MSB first. The loader rejects anything above 0x7F8.</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">3</td><td class="num">4</td><td>time</td><td>Minutes since 1992-01-01 GMT, MSB first.</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">7</td><td class="num">2</td><td>stream</td><td>VBI stream id.</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">9</td><td class="num">2</td><td>header checksum</td><td>CRC-32 of bytes 0-8, low 16 bits, stored LITTLE endian - the only number in the format that way round.</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">11</td><td></td><td>message</td><td>Concatenated commands, which tile it exactly.</td><td><s class="measured">measured</s></td></tr>
+<tr><td></td><td class="num">4</td><td>body checksum</td><td>CRC-32 of everything before it. Running the CRC over the whole packet, this field included, gives zero.</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h2 id='checksums'>Checksums</h2>
+<p>Both are the same routine, at image offset <code>0xF1F0</code> in <code>SSLOAD.DLL</code> and again verbatim at <code>0xF240</code>, with its table at <code>0x149F8</code>. The header field is the only little endian number in the format, and the absent final inversion is what makes the body check come out zero over the whole packet.</p>
+<table><thead><tr><th>Property</th><th>Value</th><th>Source</th></tr></thead><tbody>
+<tr><td>algorithm</td><td>Table driven reflected CRC-32</td><td><s class="measured">measured</s></td></tr>
+<tr><td>polynomial</td><td>0xEDB88320, the standard IEEE one</td><td><s class="measured">measured</s></td></tr>
+<tr><td>initial value</td><td>0xFFFFFFFF</td><td><s class="measured">measured</s></td></tr>
+<tr><td>final inversion</td><td>none - the register is returned as it stands</td><td><s class="measured">measured</s></td></tr>
+<tr><td>header check</td><td>crc32(bytes 0..8) &amp; 0xFFFF == bytes 9-10 read little endian</td><td><s class="measured">measured</s></td></tr>
+<tr><td>body check</td><td>crc32(the whole packet, its own trailer included) == 0</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h2 id='recovery'>Recovering a damaged packet</h2>
+<p>The body checksum is not only a test. A CRC is linear over GF(2), so its thirty-two bits are thirty-two equations in the bits of the packet, and where the damage sits in a known place the lost bits can be solved for rather than guessed. What makes that worth doing is the shape of the damage. Measured over the 1994 KCET capture, the slicer decides a bit with about 6.8 sigma of margin, which on ordinary noise would be one error in 10^15; the real rate is nearer one in a thousand. The errors are not noise at all. They are rare dropouts that destroy a few bits outright - 0.2 to 0.9 per cent of bits land inside half the eye, where noise alone would put 0.005 per cent - and a packet spans about a hundred fields, so most packets meet one.</p>
+<p>That is what makes them recoverable. A dropout leaves its mark on the bits the slicer decided by the narrowest margin, so those positions are already known and only their values are in doubt. A bit like that is an <i>erasure</i>, and an erasure costs one bit of the checksum where a flipped bit of unknown position costs about eleven, because its position has to be searched as well and every candidate tried is a chance to checksum by coincidence.</p>
+<p>How many erasures a packet needs is a property of that packet, so the budget is not fixed: the two least confident bits are tried first and the set widens only while the checksum refuses it. <b>Left over</b> below is the bits of checksum still unspent, which is what the answer is verified with. On the 1994 KCET capture half of all repairs are done with four erased bits or fewer and the mean is 6.1, so 25.9 bits are typically held back rather than the 12 that going straight to the ceiling would leave - the odds of a coincidence fall from one in 4,000 to one in 60 million. Whatever comes back must also tile into commands, which no arithmetic here can fake, and a candidate that does not tile is a reason to spend more of the budget rather than to give up.</p>
+<table><thead><tr><th>Damage</th><th>Unknown bits</th><th>Candidates</th><th>Left over</th><th>Outcome</th></tr></thead><tbody>
+<tr><td>nothing</td><td>0</td><td>1</td><td>32</td><td>passes as it stands</td></tr>
+<tr><td>bits the slicer doubted, 2 rising to 20</td><td>2 - 20</td><td>1</td><td>30 - 12</td><td>solved as erasures</td></tr>
+<tr><td>one lost VBI line</td><td>16</td><td>1</td><td>16</td><td>solved as erasures</td></tr>
+<tr><td>one flipped bit the slicer was sure of</td><td>1</td><td>2^10.6</td><td>21</td><td>searched</td></tr>
+<tr><td>two flipped bits</td><td>2</td><td>2^20.3</td><td>12</td><td>searched</td></tr>
+<tr><td>two lost VBI lines</td><td>32</td><td>1</td><td>0</td><td>refused</td></tr>
+<tr><td>damage the confidence did not point at</td><td>-</td><td>-</td><td>-</td><td>refused</td></tr>
+</tbody></table>
+<p>Measured on that capture: of 173 packets the sequence numbers say were sent, 154 were found, 19 passed the body checksum outright and 140 do once repaired. Three things corroborate them, none of which the repair constrains. The recovered sequence numbers rise in step across the whole capture. The recovered Time command puts the station eight hours behind GMT, which is Los Angeles. And solving the same packets with the budget fixed at the ceiling instead of escalating returns byte for byte the same answers - two different routes to the same packet.</p>
+<h2 id='commands'>Commands</h2>
+<p>Indexed by <code>byte 0 &amp; 0x3F</code>. <b>Length</b> is how wide the length field after the type is and <b>header</b> where the variable part starts, both from the loader's own descriptor table. <b>Loader</b> is what <code>SSLOAD.DLL</code> does with the type: run its own code, accept it without acting, or nothing. <b>Seen</b> means a capture has carried one.</p>
+<table><thead><tr><th>Type</th><th>Name</th><th>Length</th><th>Header</th><th>Loader</th><th>Decoded</th><th>Seen</th><th>Source</th></tr></thead><tbody>
+<tr><td class="num">0</td><td></td><td class="num">1</td><td class="num">0</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">1</td><td>Time</td><td class="num">1</td><td class="num">2</td><td>implemented</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">2</td><td>Daylight Saving Change</td><td class="num">1</td><td class="num">2</td><td>implemented</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">3</td><td>Region</td><td class="num">2</td><td class="num">10</td><td>implemented</td><td>yes</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">4</td><td>Channel Data</td><td class="num">1</td><td class="num">5</td><td>implemented</td><td>yes</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">5</td><td>Show List</td><td class="num">2</td><td class="num">11</td><td>implemented</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">6</td><td>Show Title</td><td class="num">1</td><td class="num">5</td><td>implemented</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">7</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">8</td><td>Show Description</td><td class="num">1</td><td class="num">5</td><td>implemented</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">9</td><td></td><td class="num">1</td><td class="num">2</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">10</td><td></td><td class="num">1</td><td class="num">2</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">11</td><td>Theme Category</td><td class="num">2</td><td class="num">5</td><td>implemented</td><td>yes</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">12</td><td>Theme Sub-Category</td><td class="num">2</td><td class="num">5</td><td>implemented</td><td>yes</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">13</td><td>Subscriber Reset</td><td class="num">1</td><td class="num">8</td><td>implemented</td><td>yes</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">14</td><td>Authorization</td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">15</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">16</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">17</td><td>Key Distribution</td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">18</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">19</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">20</td><td>Sequence Number</td><td class="num">1</td><td class="num">2</td><td>stub</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">21</td><td>Station Node Status</td><td class="num">2</td><td class="num">3</td><td>stub</td><td>yes</td><td>yes</td><td><s class="measured">measured</s></td></tr>
+<tr><td class="num">22</td><td>Long Assign IR Codes</td><td class="num">2</td><td class="num">12</td><td>stub</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">23</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">24</td><td>Subscriber Unit</td><td class="num">2</td><td class="num">9</td><td>stub</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">25</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">26</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">27</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">28</td><td></td><td class="num">1</td><td class="num">2</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">29</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">30</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">31</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">32</td><td></td><td class="num">2</td><td class="num">3</td><td>stub</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">33</td><td></td><td class="num">2</td><td class="num">3</td><td>stub</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">34</td><td></td><td class="num">2</td><td class="num">3</td><td>stub</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">35</td><td></td><td class="num">2</td><td class="num">3</td><td>stub</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">36</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">37</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">38</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">39</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">40</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">41</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">42</td><td></td><td class="num">2</td><td class="num">3</td><td>implemented</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">43</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">44</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">45</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">46</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">47</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">48</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">49</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">50</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">51</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">52</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">53</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">54</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">55</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">56</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">57</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">58</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">59</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">60</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">61</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">62</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+<tr><td class="num">63</td><td></td><td class="num">2</td><td class="num">3</td><td>none</td><td>no</td><td>no</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h2 id='command-layouts'>Command layouts</h2>
+<p>Every type the loader implements. The five a capture carries are byte exact; the rest are as <code>SSLOAD.DLL</code> reads them and have never been seen on a wire.</p>
+<h3>Time &mdash; type 1 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="measured">measured</s></td></tr>
+<tr><td>2-5</td><td>minute count, MSB first</td><td><s class="measured">measured</s></td></tr>
+<tr><td>6</td><td>zone and daylight saving flags</td><td><s class="measured">measured</s></td></tr>
+<tr><td>7</td><td>seconds</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Daylight Saving Change &mdash; type 2 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="measured">measured</s></td></tr>
+<tr><td>2-5</td><td>daylight saving starts</td><td><s class="measured">measured</s></td></tr>
+<tr><td>6-9</td><td>daylight saving ends</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Region &mdash; type 3 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>region id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5</td><td>flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6-9</td><td>effective from, same epoch as Time</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10</td><td>channel count, so a lineup is at most 255</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +0</td><td>bit 7: channel number bit 8; bits 0-6: channel id high 7</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +1</td><td>channel id low 8 (15 bits with the byte before)</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +2</td><td>channel number low 8 (9 bits with the byte before)</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11.. +3</td><td>never read by the loader</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Channel Data &mdash; type 4 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>bit 7: channel number bit 8; bits 0-6: channel id high 7</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4</td><td>channel id low 8 (15 bits with byte 3)</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5</td><td>flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6</td><td>channel number low 8 (9 bits with byte 3)</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7</td><td>which of bytes 8-15 make the short label</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8-15</td><td>one string, CALL-NET: call letters, a dash, the network</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 9 &mdash; type 9 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>2-3</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4..</td><td>payload, to the length in byte 1</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 10 &mdash; type 10 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0-8</td><td>nine bytes the loader passes to the host application without reading them</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 31 &mdash; type 31 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-8</td><td>a six byte key; the loader ignores the command unless it matches the one it holds</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10</td><td>first table entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11</td><td>second table entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>12..</td><td>that many two byte entries, then the second table, then two more bytes</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 36 &mdash; type 36 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>high nibble: which part this is</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4</td><td>which message the parts belong to</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5..</td><td>that part of it</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 37 &mdash; type 37 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>low nibble, a field</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4-5</td><td>address count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6..</td><td>that many two byte addresses; the loader reads no further unless its own is among them</td><td><s class="loader">loader</s></td></tr>
+<tr><td>after them</td><td>the payload for the receivers named</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 38 &mdash; type 38 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5</td><td>a byte the loader keeps</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6</td><td>flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7</td><td>low 3 bits: first length; upper bits: more flags</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8</td><td>second length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>9</td><td>third length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10-11</td><td>a second 16 bit value</td><td><s class="loader">loader</s></td></tr>
+<tr><td>12..</td><td>the three payloads, one after another</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 39 &mdash; type 39 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5-6</td><td>a 16 bit value</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7-10</td><td>a 32 bit value</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 40 &mdash; type 40 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>an id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5</td><td>a byte the loader keeps</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6..</td><td>payload, to the length in bytes 1-2</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 42 &mdash; type 42 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8</td><td>bits 4-5: set a flag, clear it, or neither</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Show List &mdash; type 5 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="measured">measured</s></td></tr>
+<tr><td>3</td><td>low nibble, meaning unknown</td><td><s class="measured">measured</s></td></tr>
+<tr><td>4-5</td><td>channel id, 15 bits (0x7FFF)</td><td><s class="measured">measured</s></td></tr>
+<tr><td>6-9</td><td>start of the first slot</td><td><s class="measured">measured</s></td></tr>
+<tr><td>10</td><td>slot count</td><td><s class="measured">measured</s></td></tr>
+<tr><td>11..</td><td>slots: flags, minutes, show id, then the optional fields</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Show Title &mdash; type 6 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="measured">measured</s></td></tr>
+<tr><td>2</td><td>flags</td><td><s class="measured">measured</s></td></tr>
+<tr><td>3-4</td><td>show id</td><td><s class="measured">measured</s></td></tr>
+<tr><td>5-6</td><td>theme id</td><td><s class="measured">measured</s></td></tr>
+<tr><td>7..</td><td>title</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Show Description &mdash; type 8 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="measured">measured</s></td></tr>
+<tr><td>2</td><td>flags</td><td><s class="measured">measured</s></td></tr>
+<tr><td>3-4</td><td>description id</td><td><s class="measured">measured</s></td></tr>
+<tr><td>7</td><td>rating system (bits 7-5), rating (bits 4-1), extended form only</td><td><s class="measured">measured</s></td></tr>
+<tr><td>8</td><td>content advisories, extended form only</td><td><s class="measured">measured</s></td></tr>
+<tr><td>9</td><td>year, last two digits, extended form only</td><td><s class="measured">measured</s></td></tr>
+<tr><td>7.. or 10..</td><td>text, after the extended bytes when present</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>type 9 &mdash; type 9 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>2-3</td><td>a 16 bit id</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4..</td><td>payload of length - 4 bytes</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 10 &mdash; type 10 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>2..</td><td>nine bytes handed to a registered callback</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Theme Category &mdash; type 11 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>version; a change makes the loader reload every name</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4</td><td>entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5..</td><td>entries of: id, flags, length, then a NUL terminated name</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Theme Sub-Category &mdash; type 12 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>version</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4</td><td>entry count, low 7 bits</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5..</td><td>entries, as Theme Category</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Subscriber Reset &mdash; type 13 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>2</td><td>which state to discard</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3..</td><td>payload</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Sequence Number &mdash; type 20 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1</td><td>length</td><td><s class="measured">measured</s></td></tr>
+<tr><td>2-5</td><td>a 32 bit counter, one per packet</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Station Node Status &mdash; type 21 <s class="measured">measured</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="measured">measured</s></td></tr>
+<tr><td>1-2</td><td>length, always 733</td><td><s class="measured">measured</s></td></tr>
+<tr><td>3</td><td>which layout this is. The 1994 KCET capture sends 1 and the 1998 KET tapes send 3, and the fields after byte 20 sit in different places in each</td><td><s class="measured">measured</s></td></tr>
+<tr><td>4-5</td><td>a constant, 500 on KCET and 405 on KET</td><td><s class="measured">measured</s></td></tr>
+<tr><td>6-7</td><td>a constant, 5 on KCET and 52 on KET</td><td><s class="measured">measured</s></td></tr>
+<tr><td>8-11</td><td>a Unix time, constant within a capture and earlier than the one after it</td><td><s class="measured">measured</s></td></tr>
+<tr><td>12-15</td><td>when the block was assembled, Unix seconds; constant within a capture</td><td><s class="measured">measured</s></td></tr>
+<tr><td>20-23</td><td>0x12CEA600 in every instance of both stations, four years and a continent apart. Unexplained, and the only value in the block that is</td><td><s class="measured">measured</s></td></tr>
+<tr><td>varies</td><td>the station clock at the moment of sending, Unix seconds. Not at a fixed offset - 48 in layout 3 and 58 in layout 1 - so it is found as the one field past the assembly time that reads as a time shortly after it</td><td><s class="measured">measured</s></td></tr>
+<tr><td>38-39, 50-51, 40-41 (layout 1)</td><td>how far through its cycle the station is: a total, how many are done and how many are left. They hold to the byte across all twelve instances of the 1994 capture - 487 in all, 33 more done every ten minutes - and no three fields anywhere in layout 3 hold the same identity, so they are read only when they agree</td><td><s class="measured">measured</s></td></tr>
+<tr><td>66-67 (layout 1)</td><td>the minutes between the assembly time and the clock. Exact on all twelve, and so carries nothing the other two fields do not</td><td><s class="measured">measured</s></td></tr>
+<tr><td>the rest of layout 1</td><td>zero. The block grows two bytes every instance and the added bytes are padding, so something is counted that this capture never fills in</td><td><s class="measured">measured</s></td></tr>
+<tr><td>the rest of layout 3</td><td>669 bytes, two thirds of them zero and 93 to 95 per cent of them identical from one instance to the next ten minutes later, in place - aligning the two at any other offset fits worse, so nothing slides. What does change is 7 to 9 per cent of it, in short runs which are most often pairs two bytes apart, so what is being updated is 16 bit fields scattered through a table that is otherwise static. Six instances over two captures is not enough to say what they count</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>type 31 &mdash; type 31 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>10</td><td>a count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>11</td><td>a second count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>12..</td><td>two arrays of 16 bit values, sized by those counts</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 36 &mdash; type 36 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4</td><td>entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5..</td><td>entries</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 37 &mdash; type 37 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+<tr><td>4-5</td><td>entry count</td><td><s class="loader">loader</s></td></tr>
+<tr><td>6..</td><td>entries of 16 bit fields</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 38 &mdash; type 38 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>7</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+<tr><td>9</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 39 &mdash; type 39 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5-10</td><td>a multi byte value assembled MSB first</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 40 &mdash; type 40 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>3-4</td><td>a 16 bit field</td><td><s class="loader">loader</s></td></tr>
+<tr><td>5..</td><td>records of six bytes</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>type 42 &mdash; type 42 <s class="loader">loader</s></h3>
+<table><thead><tr><th>Byte</th><th>Field</th><th>Source</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td><td><s class="loader">loader</s></td></tr>
+<tr><td>1-2</td><td>length</td><td><s class="loader">loader</s></td></tr>
+<tr><td>8</td><td>a byte</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h2>Flag bits</h2>
+<h3>Command byte 0</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x3F</td><td>type</td><td>The command type; the loader dispatches on exactly these six bits.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0xC0</td><td>enc_flg | key_id</td><td>Encryption flag and key id. Zero in every capture.</td><td><s class="patent">patent</s></td></tr>
+</tbody></table>
+<h3>Show Title byte 2</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x80</td><td>compressed</td><td>The title is Huffman coded.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x40</td><td>closedCaptioned</td><td>Loader column &#x27;TS Closed Caption&#x27;.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x20</td><td>stereo</td><td>Loader column &#x27;TS Stereo&#x27;.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x10</td><td>blackAndWhite</td><td>Loader broadcast property &#x27;B/W&#x27;.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x0F</td><td>unused</td><td>Zero on all 11,161 titles; no part of the show id.</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Show Description byte 2</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x80</td><td>compressed</td><td>The text is Huffman coded.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x08</td><td>extended</td><td>Rating, advisories and year precede the text, which then starts at byte 10.</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Show List slot byte 0</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x80</td><td>hasDescription</td><td>Two more bytes: a description id.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x40</td><td>payPerView</td><td>Reaches the database as &#x27;TS Pay Per View&#x27;.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x20</td><td>hasShowGroup</td><td>Two more bytes: a show group.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x1E</td><td>unnamed</td><td>Bits 1-4. The loader reads none of them and they are set on two slots in 43,430, both on commands with other damage.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x01</td><td>joinedInProgress</td><td>On a list&#x27;s first slot, a programme already running.</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Show Description byte 8, content advisories</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x02</td><td>nudity</td><td>Set when the programme carries this advisory.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x04</td><td>violence</td><td>Set when the programme carries this advisory.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x08</td><td>adult situations</td><td>Set when the programme carries this advisory.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x10</td><td>adult themes</td><td>Set when the programme carries this advisory.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x80</td><td>adult language</td><td>Set when the programme carries this advisory.</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Time byte 6</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x0F</td><td>utcOffsetHours</td><td>The station&#x27;s standard offset from GMT, whole hours.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x10</td><td>offsetIsNegative</td><td>Makes the offset west of Greenwich.</td><td><s class="measured">measured</s></td></tr>
+<tr><td>0x80</td><td>daylightSaving</td><td>The wall clock is an hour ahead of the offset.</td><td><s class="measured">measured</s></td></tr>
+</tbody></table>
+<h3>Channel Data byte 5</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x02</td><td>showsCallSign</td><td>Display the call sign rather than the channel number.</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Channel Data byte 7</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0xFF</td><td>short label</td><td>Read from 0x80 down, one bit per character at 8-15; the selected characters make a 4 character label for a display too narrow for the whole call sign.</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Region byte 5</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x01</td><td>applyNow</td><td>Use this lineup at once. Otherwise the loader holds the command and replays it when the stream clock reaches the effective time.</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h3>Subscriber Reset byte 2</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th><th>Source</th></tr></thead><tbody>
+<tr><td>0x01</td><td>clear stored guide</td><td>The loader calls a different routine for each bit.</td><td><s class="loader">loader</s></td></tr>
+<tr><td>0x02</td><td>clear stored settings</td><td>The loader calls a different routine for each bit.</td><td><s class="loader">loader</s></td></tr>
+</tbody></table>
+<h2>Compression</h2>
+<p>127 symbols, longest code 20 bits, Kraft sum exactly 1. Symbols 0x01-0x1F expand to whole words and fragments, which is why reading it as a character code never worked. The only strings in the format that are <em>not</em> compressed are the theme names.</p>
+<table><thead><tr><th>Code</th><th>Bits</th><th>Symbol</th></tr></thead><tbody>
+<tr><td>0100</td><td class="num">4</td><td>i</td></tr>
+<tr><td>0111</td><td class="num">4</td><td> </td></tr>
+<tr><td>1000</td><td class="num">4</td><td>e</td></tr>
+<tr><td>00011</td><td class="num">5</td><td>s </td></tr>
+<tr><td>00100</td><td class="num">5</td><td>m</td></tr>
+<tr><td>00101</td><td class="num">5</td><td>h</td></tr>
+<tr><td>00111</td><td class="num">5</td><td>d</td></tr>
+<tr><td>01101</td><td class="num">5</td><td>r</td></tr>
+<tr><td>10100</td><td class="num">5</td><td>c</td></tr>
+<tr><td>10110</td><td class="num">5</td><td>s</td></tr>
+<tr><td>10111</td><td class="num">5</td><td>t</td></tr>
+<tr><td>11001</td><td class="num">5</td><td>l</td></tr>
+<tr><td>11101</td><td class="num">5</td><td>o</td></tr>
+<tr><td>11110</td><td class="num">5</td><td>a</td></tr>
+<tr><td>000000</td><td class="num">6</td><td>n</td></tr>
+<tr><td>000010</td><td class="num">6</td><td>a </td></tr>
+<tr><td>000011</td><td class="num">6</td><td>ar</td></tr>
+<tr><td>000100</td><td class="num">6</td><td>, </td></tr>
+<tr><td>001100</td><td class="num">6</td><td>er</td></tr>
+<tr><td>010100</td><td class="num">6</td><td>f</td></tr>
+<tr><td>010101</td><td class="num">6</td><td>b</td></tr>
+<tr><td>010110</td><td class="num">6</td><td>in</td></tr>
+<tr><td>011001</td><td class="num">6</td><td>an</td></tr>
+<tr><td>100111</td><td class="num">6</td><td>\x00</td></tr>
+<tr><td>101010</td><td class="num">6</td><td>g</td></tr>
+<tr><td>110000</td><td class="num">6</td><td>.</td></tr>
+<tr><td>110100</td><td class="num">6</td><td>u</td></tr>
+<tr><td>110110</td><td class="num">6</td><td>e </td></tr>
+<tr><td>111000</td><td class="num">6</td><td>p</td></tr>
+<tr><td>0000010</td><td class="num">7</td><td>to </td></tr>
+<tr><td>0011011</td><td class="num">7</td><td>or</td></tr>
+<tr><td>0101111</td><td class="num">7</td><td> the </td></tr>
+<tr><td>0110000</td><td class="num">7</td><td>er </td></tr>
+<tr><td>0110001</td><td class="num">7</td><td>A</td></tr>
+<tr><td>1001000</td><td class="num">7</td><td>th</td></tr>
+<tr><td>1001001</td><td class="num">7</td><td>al</td></tr>
+<tr><td>1001011</td><td class="num">7</td><td>y</td></tr>
+<tr><td>1010110</td><td class="num">7</td><td>t </td></tr>
+<tr><td>1010111</td><td class="num">7</td><td>st</td></tr>
+<tr><td>1100011</td><td class="num">7</td><td>k</td></tr>
+<tr><td>1101110</td><td class="num">7</td><td>y </td></tr>
+<tr><td>1110010</td><td class="num">7</td><td>on</td></tr>
+<tr><td>1111101</td><td class="num">7</td><td>v</td></tr>
+<tr><td>1111110</td><td class="num">7</td><td>en</td></tr>
+<tr><td>1111111</td><td class="num">7</td><td>w</td></tr>
+<tr><td>00000111</td><td class="num">8</td><td>H</td></tr>
+<tr><td>00010100</td><td class="num">8</td><td>for</td></tr>
+<tr><td>00010101</td><td class="num">8</td><td>-</td></tr>
+<tr><td>00010111</td><td class="num">8</td><td>D</td></tr>
+<tr><td>00110100</td><td class="num">8</td><td>J</td></tr>
+<tr><td>00110101</td><td class="num">8</td><td>R</td></tr>
+<tr><td>01011101</td><td class="num">8</td><td>&#x27;s </td></tr>
+<tr><td>10010101</td><td class="num">8</td><td>B</td></tr>
+<tr><td>10011000</td><td class="num">8</td><td>un</td></tr>
+<tr><td>10011010</td><td class="num">8</td><td>of </td></tr>
+<tr><td>11000100</td><td class="num">8</td><td>ed </td></tr>
+<tr><td>11000101</td><td class="num">8</td><td>ur</td></tr>
+<tr><td>11010101</td><td class="num">8</td><td>M</td></tr>
+<tr><td>11010110</td><td class="num">8</td><td>C</td></tr>
+<tr><td>11010111</td><td class="num">8</td><td>S</td></tr>
+<tr><td>11100110</td><td class="num">8</td><td>ing </td></tr>
+<tr><td>11100111</td><td class="num">8</td><td>and </td></tr>
+<tr><td>000001101</td><td class="num">9</td><td>The </td></tr>
+<tr><td>000101100</td><td class="num">9</td><td>with </td></tr>
+<tr><td>000101101</td><td class="num">9</td><td>z</td></tr>
+<tr><td>010111000</td><td class="num">9</td><td>K</td></tr>
+<tr><td>100101000</td><td class="num">9</td><td>;</td></tr>
+<tr><td>100110010</td><td class="num">9</td><td>E</td></tr>
+<tr><td>100110011</td><td class="num">9</td><td>x</td></tr>
+<tr><td>100110111</td><td class="num">9</td><td>tion</td></tr>
+<tr><td>110101000</td><td class="num">9</td><td>&quot;</td></tr>
+<tr><td>110111100</td><td class="num">9</td><td>F</td></tr>
+<tr><td>110111101</td><td class="num">9</td><td>P</td></tr>
+<tr><td>110111110</td><td class="num">9</td><td>G</td></tr>
+<tr><td>110111111</td><td class="num">9</td><td>W</td></tr>
+<tr><td>111110000</td><td class="num">9</td><td>T</td></tr>
+<tr><td>111110011</td><td class="num">9</td><td>L</td></tr>
+<tr><td>0101110010</td><td class="num">10</td><td>O</td></tr>
+<tr><td>0101110011</td><td class="num">10</td><td>q</td></tr>
+<tr><td>1001010011</td><td class="num">10</td><td>V</td></tr>
+<tr><td>1001101100</td><td class="num">10</td><td>when </td></tr>
+<tr><td>1101010010</td><td class="num">10</td><td>I</td></tr>
+<tr><td>1111100010</td><td class="num">10</td><td>:</td></tr>
+<tr><td>1111100100</td><td class="num">10</td><td>N</td></tr>
+<tr><td>1111100101</td><td class="num">10</td><td>j</td></tr>
+<tr><td>00000110000</td><td class="num">11</td><td>Y</td></tr>
+<tr><td>00000110001</td><td class="num">11</td><td>(</td></tr>
+<tr><td>00000110010</td><td class="num">11</td><td>)</td></tr>
+<tr><td>10010100100</td><td class="num">11</td><td>U</td></tr>
+<tr><td>10011011010</td><td class="num">11</td><td>9</td></tr>
+<tr><td>10011011011</td><td class="num">11</td><td>0</td></tr>
+<tr><td>11010100111</td><td class="num">11</td><td>1</td></tr>
+<tr><td>11111000111</td><td class="num">11</td><td>&#x27;</td></tr>
+<tr><td>000001100110</td><td class="num">12</td><td>Z</td></tr>
+<tr><td>100101001010</td><td class="num">12</td><td>7</td></tr>
+<tr><td>110101001101</td><td class="num">12</td><td>2</td></tr>
+<tr><td>111110001101</td><td class="num">12</td><td>,</td></tr>
+<tr><td>1001010010110</td><td class="num">13</td><td>8</td></tr>
+<tr><td>1001010010111</td><td class="num">13</td><td>6</td></tr>
+<tr><td>1101010011000</td><td class="num">13</td><td>5</td></tr>
+<tr><td>1101010011001</td><td class="num">13</td><td>Q</td></tr>
+<tr><td>1111100011000</td><td class="num">13</td><td>3</td></tr>
+<tr><td>1111100011001</td><td class="num">13</td><td>4</td></tr>
+<tr><td>00000110011100</td><td class="num">14</td><td>&amp;</td></tr>
+<tr><td>00000110011111</td><td class="num">14</td><td>$</td></tr>
+<tr><td>000001100111010</td><td class="num">15</td><td>?</td></tr>
+<tr><td>000001100111100</td><td class="num">15</td><td>X</td></tr>
+<tr><td>0000011001110111</td><td class="num">16</td><td>/</td></tr>
+<tr><td>0000011001111011</td><td class="num">16</td><td>!</td></tr>
+<tr><td>00000110011101100</td><td class="num">17</td><td>`</td></tr>
+<tr><td>00000110011101101</td><td class="num">17</td><td>*</td></tr>
+<tr><td>00000110011110100000</td><td class="num">20</td><td>+</td></tr>
+<tr><td>00000110011110100001</td><td class="num">20</td><td>&lt;</td></tr>
+<tr><td>00000110011110100010</td><td class="num">20</td><td>=</td></tr>
+<tr><td>00000110011110100011</td><td class="num">20</td><td>&gt;</td></tr>
+<tr><td>00000110011110100100</td><td class="num">20</td><td>@</td></tr>
+<tr><td>00000110011110100101</td><td class="num">20</td><td>[</td></tr>
+<tr><td>00000110011110100110</td><td class="num">20</td><td>\\</td></tr>
+<tr><td>00000110011110100111</td><td class="num">20</td><td>]</td></tr>
+<tr><td>00000110011110101000</td><td class="num">20</td><td>^</td></tr>
+<tr><td>00000110011110101001</td><td class="num">20</td><td>_</td></tr>
+<tr><td>00000110011110101010</td><td class="num">20</td><td>{</td></tr>
+<tr><td>00000110011110101011</td><td class="num">20</td><td>|</td></tr>
+<tr><td>00000110011110101100</td><td class="num">20</td><td>}</td></tr>
+<tr><td>00000110011110101101</td><td class="num">20</td><td>~</td></tr>
+<tr><td>00000110011110101110</td><td class="num">20</td><td>#</td></tr>
+<tr><td>00000110011110101111</td><td class="num">20</td><td>%</td></tr>
+</tbody></table>
+<h2>What the data becomes</h2>
+<p>The schema <code>SSLOAD.DLL</code> loads a decoded guide into, read from <code>dbsets.dll</code>. It is the clearest statement of what the protocol's fields are <em>for</em>: a Theme is a (genre, subgenre) pair, a Channel binds a tuning position to a Station over a time range, and the eight booleans on a Time Slot are the attribute set a broadcast can carry.</p>
+<table><thead><tr><th>Table</th><th>Columns</th></tr></thead><tbody>
+<tr><td>BroadcastProperty</td><td>BP Broadcast Property ID, BP Tuning Space, BP Abbreviation, BP Name, BP Display Order, BP Pictogram Moniker</td></tr>
+<tr><td>ChannelT</td><td>C Channel ID, C Tuning Space, C Channel Number, C Start Time, C End Time, C Length, C Station ID, C Description, C Enhancement Mapping ID, C Rating ID, C Display Mask, C Payment Address, C Payment Token, C Last Update, C Tunable</td></tr>
+<tr><td>ChannelStream</td><td>CSR Channel ID, CSR Stream Type ID, CSR SubChannel, CSR Name</td></tr>
+<tr><td>ChannelProperty</td><td>CP Channel ID, CP Broadcast Property ID</td></tr>
+<tr><td>EpisodeT</td><td>E Episode ID, E Title, E Description, E Enhancement Mapping ID, E Display Mask, E Theme ID, E Rating ID, E Abbreviation, E Last Update</td></tr>
+<tr><td>Enhancement</td><td>EN Enhancement ID, EN Mapping ID, EN Title, EN Show Reference, EN Preload URL, EN Address, EN Expire Date</td></tr>
+<tr><td>EpisodeProperty</td><td>EP Episode ID, EP Broadcast Property ID</td></tr>
+<tr><td>Genre</td><td>G Genre ID, G Tuning Space, G Name</td></tr>
+<tr><td>Network</td><td>N Network ID, N Name, N LogoMoniker</td></tr>
+<tr><td>Rating</td><td>R Rating ID, R Rating System ID, R Rating, R Description, R Pictogram Moniker</td></tr>
+<tr><td>Rating System</td><td>RS Rating System ID, RS Tuning Space, RS Name, RS Description</td></tr>
+<tr><td>Station</td><td>S Station ID, S Call Letters, S Name, S Network ID, S Logo, S Description</td></tr>
+<tr><td>StreamType</td><td>SR Stream Type ID, SR Tuning Space, SR Value, SR Description, SR Category, SR LocaleID</td></tr>
+<tr><td>SubGenre</td><td>SG SubGenre ID, SG Name</td></tr>
+<tr><td>Theme</td><td>T Theme ID, T Genre ID, T SubGenre ID</td></tr>
+<tr><td>TimeSlot</td><td>TS Time Slot ID, TS Channel ID, TS Episode ID, TS Start Time, TS End Time, TS Length, TS Payment Address, TS Payment Token, TS Last Update, TS Pay Per View, TS Closed Caption, TS Stereo, TS Rerun, TS Tape Inhibited, TS Other Properties Exist, TS Alternate Data Exists, TS Alternate Audio Exists, TS Enhancement Mapping ID</td></tr>
+<tr><td>TimeSlotEnhancements</td><td>TSE Time Slot ID, TSE Mapping ID</td></tr>
+<tr><td>EpisodeEnhancements</td><td>EE Episode ID, EE Mapping ID</td></tr>
+<tr><td>ChannelEnhancements</td><td>CE Channel ID, CE Mapping ID</td></tr>
+</tbody></table>
+<h2>Still unknown</h2>
+<table><thead><tr><th>What</th><th>Where it stands</th></tr></thead><tbody>
+<tr><td>Show List byte 3, low nibble</td><td>Ten distinct values, one per channel-day. The loader stores it at header offset 0xC and nothing reads it back; it correlates with neither slot count, description count nor command length.</td></tr>
+<tr><td>Station Node Status, 295 of 733 bytes</td><td>Two monotonic counters and what looks like a node bitmap. Seven instances across three tapes is not enough to name fields from.</td></tr>
+<tr><td>What types 9, 10, 31, 36-40 and 42 are for</td><td>Their layouts are read off the loader and are in the table above; what they mean is not. They gate each other through two bytes the loader keeps - 31 advances a state, 9 waits for it, 42 sets a flag, 36 and 37 wait for that - so they are one sequence a receiver is walked through rather than nine messages. The first step is addressed by a six byte key the receiver must already hold, which is reason enough for no capture to carry any of them.</td></tr>
+<tr><td>The fourth byte of a Region lineup entry</td><td>Three of the four carry the channel id and its number. The loader never reads the fourth.</td></tr>
+<tr><td>Which network names the loader knows</td><td>Channel Data gives the network as text after a dash, and the loader looks that text up in a table to store an id. The table itself is in dbsets.dll, not read here, so the name is carried through as it was sent.</td></tr>
+</tbody></table>
+</main></body></html>

@@ -43,7 +43,9 @@ Examples
 Options
 =======
 ```
-usage: cc_decoder.py [-h] -o OUTPUT_SUBTITLE_NAME [-q] [--debug_plot] [--deinterlaced] [--ffmpeg ] [--ffmpeg_pre_scale ] [--ffmpeg_hw_accel ] [--ccformat ] [--start_line ] [--end_line ] [--min_correlation ] [--preamble_run_in_count ] [--frame_rate ] videofile
+usage: cc_decoder.py [-h] -o OUTPUT_SUBTITLE_NAME [-q] [--debug_plot] [--deinterlaced] [--ffmpeg] [--ffmpeg_pre_scale] [--ffmpeg_hw_accel] [--ccformat] [--start_line] [--end_line]
+                     [--min_correlation] [--preamble_run_in_count] [--frame_rate]
+                     videofile
 
 Extracts CEA-608-E Closed Captions (line 21) data from a video file
 
@@ -59,17 +61,18 @@ Output Options:
   -o OUTPUT_SUBTITLE_NAME
                         Output subtitle filename without extension
   --ccformat            Specify one or more comma separated output formats (e.g. srt,scc,text) 
-                          srt   - SubRip subtitles (default)
-                          scc   - Scenarist Closed Captions
-                          html  - HTML output with styling and colors
-                          text  - Plain text output (TEXT mode only)
-                          xds   - eXtended Data Services (XDS) data
-                          raw   - Raw caption data
-                          debug - Debug output
+                          srt       - SubRip subtitles (default)
+                          scc       - Scenarist Closed Captions
+                          html      - HTML output with styling and colors
+                          text      - Plain text output (TEXT mode only)
+                          xds       - eXtended Data Services (XDS) data
+                          starsight - StarSight program guide data
+                          raw       - Raw caption data
+                          debug     - Debug output
 
 Input Options:
   --deinterlaced        Specify if the input video is progressive (i.e. de-interlaced)
-  --ffmpeg              Override the default path to the ffmpeg binary (default /home/ethan/bin/ffmpeg)
+  --ffmpeg              Override the default path to the ffmpeg binary (default /usr/bin/ffmpeg)
   --ffmpeg_pre_scale    FFMpeg video filter options before scaling.
   --ffmpeg_hw_accel     FFMpeg `hwaccel` option (i.e. none,auto,vaapi,nvdec,etc...) (default none)
 
@@ -87,6 +90,30 @@ Decoding Options:
                           29.97 (NTSC) [default]
                           25    (PAL)
 ```
+
+### Decoding VBI sample captures
+
+A 4fsc TBC VBI capture (`.vbi` / `.tbc` raw 16 bit samples, 910 per line) is fed in
+through ffmpeg. It is important
+
+```
+ffmpeg -hide_banner -f rawvideo -pixel_format y16 -framerate 59.94 -video_size 910x16 \
+       -i capture-tbc-crop.vbi \
+       -vf "weave,crop=760:16:126:10,scale=interl=1,scale=720:16" \
+       -c:v ffv1 -f matroska pipe:1 \
+  | cc_decoder.py --start_line 10 --end_line 15 --ccformat srt - -o captions-from-VBI
+```
+
+`-` reads the video from stdin. The crop selects the VBI lines of interest and scales
+them to the 720 wide line the decoder expects; `weave` halves the frame rate to 29.97,
+so the default `--frame_rate` is already right and the timecodes come out true.
+
+Widen the line range to pick up everything else carried in the same capture:
+
+```
+... | cc_decoder.py --start_line 0 --end_line 15 --ccformat srt,xds,starsight - -o out
+```
+
 
 Performance
 ===========

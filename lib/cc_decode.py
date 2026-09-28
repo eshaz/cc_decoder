@@ -49,7 +49,9 @@ import re
 import sys
 import math
 
-from html import escape
+from collections import Counter
+
+from html import escape, unescape
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -57,12 +59,45 @@ import matplotlib.pyplot as plt
 from setproctitle import setproctitle
 from multiprocessing import current_process
 
+
 PREAMBLE_RUN_IN_COUNT = 6.5
+
+# How wide one bit may be, as a fraction of the image width.
+MIN_CLOCK_FRACTION = 0.035
+MAX_CLOCK_FRACTION = 0.041
+
+# Everything well above the data's own bandwidth is noise. The bits are NRZ at the clock
+# rate, so their spectrum is a sinc whose first null is at the bit rate
+BAND_LIMIT_PASS = 1.0
+BAND_LIMIT_STOP = 1.5
+_BAND_LIMIT_MASKS = {}
+
+def band_limit(line):
+    """ The line with everything above the data's own bandwidth taken out """
+    width = len(line)
+    mask = _BAND_LIMIT_MASKS.get(width)
+
+    if mask is None:
+        bit = 1.0 / (0.5 * (MIN_CLOCK_FRACTION + MAX_CLOCK_FRACTION) * width)
+        stop = BAND_LIMIT_STOP * bit
+        start = BAND_LIMIT_PASS * bit
+
+        frequency = np.fft.rfftfreq(width)
+        mask = np.ones(len(frequency))
+        mask[frequency >= stop] = 0.0
+        shoulder = (frequency > start) & (frequency < stop)
+        mask[shoulder] = 0.5 * (1 + np.cos(np.pi * (frequency[shoulder] - start) / (stop - start)))
+        _BAND_LIMIT_MASKS[width] = mask
+
+    return np.fft.irfft(np.fft.rfft(line) * mask, width)
 START_BIT_ZEROS_COUNT = 2
 START_BIT_ONES_COUNT = 1
 START_BIT_COUNT = START_BIT_ZEROS_COUNT + START_BIT_ONES_COUNT
 DATA_BIT_COUNT = 16
 PRE_COMPUTED_PREAMBLE_TEMPLATES = []
+
+# a bit whose sample window varies by more than this is treated as unreliable
+MIN_STD_DEV_FOR_CORRECTION = 0.3
 
 CC_TABLE = {
     0x00: '',  # Special - included here to clear a few things up
@@ -74,6 +109,7 @@ CC_TABLE = {
 
 # Populate standard ASCII codes ASCII ranges that are shared
 CC_TABLE.update({i: chr(i) for nr in [(0x41, 0x5B), (0x61, 0x7B), (0x30, 0x3A)] for i in range(nr[0], nr[1])})
+
 
 # Two byte chars
 SPECIAL_CHARS_TABLE = {
@@ -90,7 +126,7 @@ EXTENDED_SPANISH_FRENCH = {
     0x23: 'Ú',
     0x24: 'Ü',
     0x25: 'ü',
-    0x26: '´',
+    0x26: '‘',
     0x27: '¡',
     0x28: '*',
     0x29: "'",
@@ -142,7 +178,7 @@ EXTENDED_PORTUGUESE_GERMAN_DANISH = {
     0x34: 'ß',
     0x35: '¥',
     0x36: '¤',
-    0x37: '|',
+    0x37: '│',
     0x38: 'Å',
     0x39: 'å',
     0x3A: 'Ø',
@@ -176,33 +212,46 @@ CONTROL_CODES = {
     (0x17, 0x22): 'Tab Offset 2',               (0x17, 0x23): 'Tab Offset 3'
 }
 
-# This is an unofficial extension to the standard
-# See http://www.theneitherworld.com/mcpoodle/SCC_TOOLS/DOCS/CC_CODES.HTML
-# These
+# CEA-608-E Table 4
+CONTROL_CODES.update({
+    (0x17, 0x24): 'Standard Character Set',     (0x17, 0x25): 'Standard Character Set Double Size',
+    (0x17, 0x26): 'First Private Character Set', (0x17, 0x27): 'Second Private Character Set',
+    (0x17, 0x28): 'GB 2312-80 Character Set',   (0x17, 0x29): 'KSC 5601-1987 Character Set',
+    (0x17, 0x2A): 'First Registered Character Set',
+})
+
+# CEA-608-E G.2.2, G.2.3
+CONTROL_CODES.update({
+    (0x16, 0x20): 'Article Name Start',         (0x16, 0x30): 'Article Name End',
+    (0x16, 0x31): 'Article Clear',              (0x16, 0x32): 'Article End',
+})
+CONTROL_CODES.update({(0x16, a): 'Article Page %d' % (a - 0x1F) for a in range(0x21, 0x30)})
+
+# CEA-608-E Table 3
 BACKGROUND_COLOR_CODES = {
     0x20: 'Background White',
-    0x21: 'Background Semi-Transparent White',  # Doc says A1.. but seems to be 21
-    0x22: 'Background Green',                   # ditto
-    0x23: 'Background Semi-Transparent White',
-    0x24: 'Background Blue',                    # ditto
+    0x21: 'Background Semi-Transparent White',
+    0x22: 'Background Green',
+    0x23: 'Background Semi-Transparent Green',
+    0x24: 'Background Blue',
     0x25: 'Background Semi-Transparent Blue',
     0x26: 'Background Cyan',
-    0x27: 'Background Semi-Transparent Cyan',   # ditto
-    0x28: 'Background Red',                     # ditto
+    0x27: 'Background Semi-Transparent Cyan',
+    0x28: 'Background Red',
     0x29: 'Background Semi-Transparent Red',
-    0x2A: 'Background Yellow',                  # ditto
-    0x2B: 'Background Semi-Transparent Yellow', # ditto
+    0x2A: 'Background Yellow',
+    0x2B: 'Background Semi-Transparent Yellow',
     0x2C: 'Background Magenta',
-    0x2D: 'Background Semi-Transparent Magenta',# ditto
-    0x2E: 'Background Black',                   # ditto
+    0x2D: 'Background Semi-Transparent Magenta',
+    0x2E: 'Background Black',
     0x2F: 'Background Semi-Transparent Black',
 }
 
-CC1_BACKGROUND_CHARS = { (0x10,x): y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC3
-CC2_BACKGROUND_CHARS = { (0x18,x): y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC4
+CC1_BACKGROUND_CHARS = { (0x10,x): 'CC1 ' + y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC3
+CC2_BACKGROUND_CHARS = { (0x18,x): 'CC2 ' + y for (x,y) in BACKGROUND_COLOR_CODES.items() }  # Also CC4
 
-CC1_BACKGROUND_CHARS.update( { (0x17, 0x2D) : 'Background Transparent' } )  # Also CC3
-CC2_BACKGROUND_CHARS.update( { (0x1F, 0xAD) : 'Background Transparent' } )  # Also CC4
+CC1_BACKGROUND_CHARS.update( { (0x17, 0x2D) : 'CC1 Background Transparent' } )  # Also CC3
+CC2_BACKGROUND_CHARS.update( { (0x1F, 0x2D) : 'CC2 Background Transparent' } )  # Also CC4
 
 ROLL_UP_LEN = {
     0x25: 2, # Roll-Up Captions-2 Rows
@@ -219,7 +268,7 @@ MID_ROW_CODES = {
     (0x11, 0x2A): 'Mid-row: Yellow',  (0x11, 0x2B): 'Mid-row: Yellow Underline',
     (0x11, 0x2C): 'Mid-row: Magenta', (0x11, 0x2D): 'Mid-row: Magenta Underline',
     (0x11, 0x2E): 'Mid-row: Italics', (0x11, 0x2F): 'Mid-row: Italics Underline',
-    (0x17, 0x2E): 'Mid-row: Black',   (0x17, 0x2F): 'Mid-row: Black Underline',
+    (0x17, 0x2E): 'Foreground Black', (0x17, 0x2F): 'Foreground Black Underline',  # CEA-608-E Table 3
     (0x14, 0x28): 'Mid-row: Flash On'
 }
 
@@ -245,9 +294,17 @@ PREAMBLE_ODD = {
 EVEN_PREAMBLE = {a + 0x20: b for (a, b) in PREAMBLE_ODD.items()}
 
 CC1_CONTROL_CODES = {(a[0], a[1]): 'CC1 ' + b for (a, b) in CONTROL_CODES.items()}
-CC2_CONTROL_CODES = {(a[0] == 0x14 and 0x1C or 0x1F, a[1]): 'CC2 ' + b for (a, b) in CONTROL_CODES.items()}
+CC2_CONTROL_CODES = {(a[0] | 0x08, a[1]): 'CC2 ' + b for (a, b) in CONTROL_CODES.items()}
 CC1_MID_ROW_CODES = {(a[0],        a[1]): 'CC1 ' + b for (a, b) in MID_ROW_CODES.items()}
 CC2_MID_ROW_CODES = {(a[0] | 0x08, a[1]): 'CC2 ' + b for (a, b) in MID_ROW_CODES.items()}
+
+# Field 2 sends the miscellaneous control codes, 0x20 to 0x2F, with 0x15 and 0x1D where field 1
+# uses 0x14 and 0x1C (CEA-608-E 8.4)
+# Every other code - PACs, mid-row codes, tab offsets, specials - is the same on
+# both fields, so for those it is the line a code arrived on that says whether it is CC1 or CC3.
+MISC_CODES = {a[1]: b for (a, b) in {**CONTROL_CODES, **MID_ROW_CODES}.items() if a[0] == 0x14}
+CC3_CONTROL_CODES = {(0x15, a): 'CC3 ' + b for (a, b) in MISC_CODES.items()}
+CC4_CONTROL_CODES = {(0x1D, a): 'CC4 ' + b for (a, b) in MISC_CODES.items()}
 
 ## Columns headings 
 CC1_PREAMBLE_COLS = [0x11, 0x11, 0x12, 0x12, 0x15, 0x15, 0x16, 0x16, 0x17, 0x17, 0x10, 0x13, 0x13, 0x14, 0x14]
@@ -271,6 +328,8 @@ def _cc_preamble_table():
 ALL_CC_CONTROL_CODES = _cc_preamble_table()
 ALL_CC_CONTROL_CODES.update(CC1_CONTROL_CODES)
 ALL_CC_CONTROL_CODES.update(CC2_CONTROL_CODES)
+ALL_CC_CONTROL_CODES.update(CC3_CONTROL_CODES)
+ALL_CC_CONTROL_CODES.update(CC4_CONTROL_CODES)
 ALL_CC_CONTROL_CODES.update(CC1_MID_ROW_CODES)
 ALL_CC_CONTROL_CODES.update(CC2_MID_ROW_CODES)
 ALL_CC_CONTROL_CODES.update(CC1_BACKGROUND_CHARS)
@@ -317,7 +376,7 @@ XDS_GENRE_CODES = {
     0x66: 'Premier',      0x67: 'Prerecorded',   0x68: 'Product',     0x69: 'Professional',  0x6A: 'Public',
     0x6B: 'Racing',       0x6C: 'Reading',       0x6D: 'Repair',      0x6E: 'Repeat',        0x6F: 'Review',
     0x70: 'Romance',      0x71: 'Science',       0x72: 'Series',      0x73: 'Service',       0x74: 'Shopping',
-    0x75: 'Soap',         0x76: 'Special',       0x77: 'Suspense',    0x78: 'Talk',          0x79: 'Technical',
+    0x75: 'Soap Opera',   0x76: 'Special',       0x77: 'Suspense',    0x78: 'Talk',          0x79: 'Technical',
     0x7A: 'Tennis',       0x7B: 'Travel',        0x7C: 'Variety',     0x7D: 'Video',         0x7E: 'Weather',
     0x7F: 'Western',
 }
@@ -375,7 +434,7 @@ WEATHER_CATEGORY_CODES = {
 }
 
 XDS_CGMS = [
-    'Copying is permitted without restriction', 'Condition not to be used',
+    'Copying is permitted without restriction', 'No more copies (one generation copy has been made)',
     'One generation of copies may be made',     'No copying is permitted'
 ]
 
@@ -385,7 +444,7 @@ XDS_CGMS_APS = [  # Macrovision, etc
 ]
 
 XDS_DAY_OF_WEEK = {
-    0xc1 : 'Sun',
+    0x41 : 'Sun',
     0x42 : 'Mon',
     0x43 : 'Tue',
     0x44 : 'Wed',
@@ -414,6 +473,13 @@ CC_CHANNEL_TO_FIELD = {
     'CC2': 0,
     'CC3': 1,
     'CC4': 1,
+}
+
+CC_DATA_CHANNEL = {
+    'CC1': 1,
+    'CC2': 2,
+    'CC3': 1,
+    'CC4': 2,
 }
 
 CC_CHANNEL_TO_TEXT_CHANNEL = {
@@ -448,13 +514,15 @@ def decode_byte_pair(control, byte1, byte2, default_unicode=True):
         return ALL_CC_CONTROL_CODES.get(controlcode)
     if controlcode in ALL_SPECIAL_CHARS:
         return ALL_SPECIAL_CHARS.get(controlcode)
+    if 0x10 <= byte1 <= 0x1F:
+        return '?b1(%02x)?b2(%02x)' % (byte1, byte2) if default_unicode else '' # CEA-608-E 6.3
     return '' + CC_TABLE.get(byte1, '?b1(%02x)' % (byte1) if default_unicode else "") + \
            CC_TABLE.get(byte2, '?b2(%02x)' % (byte2) if default_unicode else "")
 
 def precompute_sine_templates(image_width, preamble_run_in_count):
     # granularity of period width
-    min_clock_len = round(0.035 * image_width) # lower boundary for period width
-    max_clock_len = round(0.041 * image_width) # upper boundary for period width
+    min_clock_len = round(MIN_CLOCK_FRACTION * image_width) # lower boundary for period width
+    max_clock_len = round(MAX_CLOCK_FRACTION * image_width) # upper boundary for period width
     num_steps = 5 # fractional amount to search for pixel width
 
     steps = (max_clock_len - min_clock_len) * num_steps
@@ -472,29 +540,66 @@ def precompute_sine_templates(image_width, preamble_run_in_count):
             break
 
         template = np.concatenate((
-            np.sin(2 * np.pi * np.arange(run_len) / pixels_per_cycle), #   clock run in
-            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), 0), # 0,0
-            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #   1
+            -np.sin(2 * np.pi * (np.arange(run_len) / pixels_per_cycle - preamble_run_in_count)), #    clock run in, CEA-608-E Table 2
+            np.full(round(START_BIT_ZEROS_COUNT * pixels_per_cycle), -1), # 0,0 at 0 IRE
+            np.full(round(START_BIT_ONES_COUNT * pixels_per_cycle), 1) #    1
         ))
         template -= template.mean()
-        template_rev = template[::-1]
         var_t = np.sum(template ** 2)
-        
-        templates.append((
-            pixels_per_cycle,
-            max_width,
-            run_len,
-            template,
-            template_rev,
-            var_t
-        ))
 
-    return np.asarray(templates, dtype=tuple)
+        lag_count = image_width - len(template) + 1
+
+        templates.append((pixels_per_cycle, max_width, run_len, template, len(template),
+                          var_t, lag_count))
+
+    # ---- ONE SCORING PASS FOR ALL OF THEM ----
+    #
+    # Every template's lags laid end to end in one flat run, so the scoring is nine array
+    # operations for the whole search rather than nine for each template. At these sizes a
+    # numpy call costs more than the arithmetic it does, so the number of calls is what the
+    # search costs, and doing it flat is about four times fewer.
+    #
+    # `lows` and `highs` index the line's prefix sums for each lag's window, and `scale`
+    # and `spread` carry each template's own constants out to every lag that belongs to it.
+    total = sum(count for _, _, _, _, _, _, count in templates)
+    lows = np.empty(total, dtype=np.intp)
+    highs = np.empty(total, dtype=np.intp)
+    scale = np.empty(total)
+    spread = np.empty(total)   # the window length, to divide by
+
+    at = 0
+    spans = []
+    for pixels_per_cycle, max_width, run_len, template, template_len, var_t, count in templates:
+        lags = np.arange(count, dtype=np.intp)
+        lows[at:at + count] = lags
+        highs[at:at + count] = lags + template_len
+        scale[at:at + count] = var_t
+        spread[at:at + count] = template_len
+        spans.append((at, count, template, template_len, max_width, run_len, pixels_per_cycle))
+        at += count
+
+    return PreambleSearch(tuple(spans), lows, highs, scale, spread,
+                          np.empty(total), np.empty(total), np.empty(total))
+
+class PreambleSearch:
+    """ Every preamble template, arranged so one pass scores all of them """
+
+    __slots__ = ('spans', 'lows', 'highs', 'scale', 'spread', 'conv', 'sums', 'variance')
+
+    def __init__(self, spans, lows, highs, scale, spread, conv, sums, variance):
+        self.spans = spans
+        self.lows = lows
+        self.highs = highs
+        self.scale = scale
+        self.spread = spread
+        self.conv = conv
+        self.sums = sums
+        self.variance = variance
 
 def sync_to_preamble(img, row):
     # synchronize to the clock run in sine wave as well as the three start bits
     # Read and normalize line
-    line = img[row]
+    line = band_limit(img[row])
 
     line_min, line_max = line.min(), line.max()
     if line_min == line_max:
@@ -504,47 +609,70 @@ def sync_to_preamble(img, row):
     norm_len = len(norm)
 
     # ---- CLOCK RUN-IN MATCH ----
-    # Precompute cumulative sums for fast variance computation
-    cumsum = np.cumsum(norm)
-    cumsum2 = np.cumsum(norm ** 2)
+    # Cumulative sums for fast windowed variance, padded with a leading zero so a
+    # window is one subtraction of two slices - the unpadded form needed a fresh
+    # concatenate per template per line, which is 600,000 allocations over a capture.
+    cumsum = np.empty(norm_len + 1)
+    cumsum2 = np.empty(norm_len + 1)
+    cumsum[0] = cumsum2[0] = 0.0
+    np.cumsum(norm, out=cumsum[1:])
+    np.cumsum(norm * norm, out=cumsum2[1:])
 
+    search = PRE_COMPUTED_PREAMBLE_TEMPLATES
+    if not search.spans:
+        # no template fits a line this narrow, so there is nothing here to find
+        return None
+
+    # correlate every template over the line, into one flat run
+    for at, count, template, template_len, _, _, _ in search.spans:
+        search.conv[at:at + count] = np.correlate(norm, template, mode='valid')
+
+    # then score the whole run at once. This is the same normalized correlation as before,
+    # conv squared over the windowed variance of the line times the template's own, with
+    # each template's constants carried alongside its lags rather than applied in a loop.
+    sums = search.sums
+    variance = search.variance
+    np.subtract(cumsum[search.highs], cumsum[search.lows], out=sums)
+    np.subtract(cumsum2[search.highs], cumsum2[search.lows], out=variance)
+    np.multiply(sums, sums, out=sums)
+    np.divide(sums, search.spread, out=sums)
+    np.subtract(variance, sums, out=variance)
+    np.multiply(variance, search.scale, out=variance)
+    variance += 1e-12
+
+    score = np.multiply(search.conv, search.conv, out=search.conv)
+    score /= variance
+
+    # the best lag of each template, and the template whose best both fits and wins
     best_score = -np.inf
     preamble_start = None
     preamble_run_in_len = None
     bit_width = None
-    best_sine_template = None
 
-    for (
-        pixels_per_cycle,
-        max_width,
-        run_in_len,
-        preamble_template,
-        preamble_template_rev,
-        var_t
-    ) in PRE_COMPUTED_PREAMBLE_TEMPLATES:
-        # normalized correlation
-        preamble_template_len = len(preamble_template)
-
-        conv = np.convolve(norm, preamble_template_rev, mode='valid')
-        sum_x = cumsum[preamble_template_len-1:] - np.concatenate(([0], cumsum[:-preamble_template_len]))
-        sum_x2 = cumsum2[preamble_template_len-1:] - np.concatenate(([0], cumsum2[:-preamble_template_len]))
-        var_x = sum_x2 - sum_x ** 2 / preamble_template_len
-        score = (conv ** 2) / (var_t * var_x + 1e-12)
-
-        idx = np.argmax(score)
+    for at, count, template, _, max_width, run_len, pixels_per_cycle in search.spans:
+        window = score[at:at + count]
+        idx = int(window.argmax())
         if idx + max_width >= norm_len:
             # best match would be too long to fit in a line
             continue
 
-        if score[idx] > best_score:
-            best_score = score[idx]
+        if window[idx] > best_score:
+            best_score = window[idx]
             preamble_start = idx
-            preamble_run_in_len = run_in_len
+            preamble_run_in_len = run_len
             bit_width = pixels_per_cycle
-            best_sine_template = preamble_template
+            run_in = template[:run_len]
 
-    if best_sine_template is None:
+    if preamble_start is None:
         return None
+
+    # CEA-608-E 5.2: without its third start bit a line locks one bit late, onto the next 0,0,1.
+    # Across the KET and KCET captures the run-in one bit before a real lock never fits past 0.85.
+    earlier = preamble_start - round(bit_width)
+    if earlier >= 0:
+        fit_earlier = np.corrcoef(norm[earlier:earlier + preamble_run_in_len], run_in)[0, 1]
+        if fit_earlier >= 0.9 and fit_earlier > np.corrcoef(norm[preamble_start:preamble_start + preamble_run_in_len], run_in)[0, 1]:
+            preamble_start = earlier
 
     preamble_end = preamble_start + preamble_run_in_len
 
@@ -554,107 +682,200 @@ def sync_to_preamble(img, row):
         "preamble_end": preamble_end,
         "bit_width": bit_width,
         "score": best_score,
+        "cumsum": cumsum,
+        "cumsum2": cumsum2,
     }
 
-def get_bit(bit_index, bit_width, bit_padding, normalized_line, normalized_median, preamble_end):
+def bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end):
+    """ The samples this bit was sliced from """
     start = preamble_end + bit_index * bit_width
     s = round(start) + bit_padding
     e = round(start + bit_width) - bit_padding
 
-    seg = normalized_line[s:e]
-    mean = seg.mean()
-    std = math.sqrt((abs(seg - mean) ** 2).mean())
+    return normalized_line[s:e]
 
-    return 1 if mean > normalized_median else 0, std
+def get_bit_value(bit_index, bit_width, bit_padding, normalized_line, normalized_median,
+                  preamble_end):
+    """ Just the bit, for the start bits, whose settledness nothing asks about """
+    seg = bit_window(bit_index, bit_width, bit_padding, normalized_line, preamble_end)
 
-def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot):
-    # fraction of data to remove at edges of each detected bit
-    bit_width_padding = 0.1
-    min_std_dev_for_correction = 0.3
+    # `ndarray.mean` is the same arithmetic with several layers of dtype handling on
+    # top, and this runs about ninety thousand times a second
+    return 1 if seg.sum() / seg.size > normalized_median else 0
+
+# How many times the slicing level is re-measured from the cells it has just decided, and
+# how many cells each level needs before its drift is worth fitting rather than assuming.
+LEVEL_FIT_PASSES = 2
+MIN_CELLS_PER_LEVEL = 3
+
+def _level_line(cells, high, side):
+    """ Where one of the two levels sits at each cell, as a straight line fitted to it
+
+    Least squares in closed form rather than `polyfit`, which would be called twice a pass
+    on every line of a capture and does not need to solve a general system to do it.
+    """
+    count = 0
+    sum_x = sum_y = 0.0
+    for index, value in enumerate(cells):
+        if high[index] is side:
+            count += 1
+            sum_x += index
+            sum_y += value
+
+    mean_x = sum_x / count
+    mean_y = sum_y / count
+
+    covariance = variance = 0.0
+    for index, value in enumerate(cells):
+        if high[index] is side:
+            offset = index - mean_x
+            covariance += offset * (value - mean_y)
+            variance += offset * offset
+
+    if variance == 0.0:
+        return [mean_y] * len(cells)
+
+    slope = covariance / variance
+    return [slope * (index - mean_x) + mean_y for index in range(len(cells))]
+
+def decode_bytes(normalized_line, preamble_start, preamble_end, bit_width, best_score, debug_plot, cumsum, cumsum2):
+    """ Slice the two data bytes out of a line
+
+    Both bytes come back as the eight bits that were on the wire, low bit first, with
+    no interpretation of the eighth: CEA-608 uses it for odd parity, StarSight uses it
+    for data, and which it is belongs to the consumer rather than here. `noisy` flags
+    the bits whose sample window was too unsettled to trust, one flag per data bit,
+    which is what the CEA-608 layer needs to correct a single bit error.
+
+    `confidence` is the other half of that, and the one StarSight needs, since StarSight
+    spends the eighth bit on data and so has no parity to lean on. It is one number per
+    data bit: how far that bit sat from the slicing level, over how far a bit on this line
+    sits from it typically. A bit that reads 1.0 is as clear as this line gets and one that
+    reads near 0 was all but a coin toss, which is what a tape dropout leaves behind.
+    """
+    # Fraction of each bit cell to drop at its edges before averaging what is left. The
+    # edges are where the channel's ringing from the previous cell still sits, so they
+    # carry that cell as much as this one; sampling the middle half instead is the usual
+    # answer and measures better here. On the 1994 KCET tape it is worth 82 packets to 87;
+    # on both 1998 KET captures it changes nothing at all - 337 and 397 packets at 0.1,
+    # 0.25 and 0.35 alike - because a clean line decodes either way. Anywhere in 0.2 to
+    # 0.4 measures the same on this evidence, so this is the middle of that range rather
+    # than the best single number in it.
+    bit_width_padding = 0.25
 
     # ---- BIT DECODING ----
-    normalized_median = np.mean(normalized_line[round(preamble_start):round(preamble_end)])
+    preamble = normalized_line[round(preamble_start):round(preamble_end)]
+    normalized_median = preamble.sum() / preamble.size
     bit_padding = math.ceil(bit_width_padding * bit_width)
 
-    # assert start bit
+    # assert start bits
+    #
+    # The three are 0, 0, 1, but only the last two are asserted. The first sits directly
+    # against the end of the clock run-in, and on a tape the run-in's last cycle can
+    # overshoot and decay across it, so it slices as 1 on a line that is otherwise
+    # perfect. Measured on the 1994 KCET VHS capture, that single bit was rejecting 89
+    # StarSight lines in 8,180 - and since a StarSight packet spans about a hundred
+    # fields, each lost line destroys a whole packet. Asserting the last two costs
+    # nothing where the signal is clean: over 20,000 fields of both 1998 KET captures it
+    # admits no line that the strict form did not, and the 11 lines it adds on the 1994
+    # tape all carry valid CEA-608 parity, so they are recovered data rather than noise.
     if (
-        get_bit(0, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
-        or get_bit(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 0
-        or get_bit(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] != 1
+        get_bit_value(1, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 0
+        or get_bit_value(2, bit_width, bit_padding, normalized_line, normalized_median, preamble_end) != 1
     ):
-        return None, None, None, None
+        return None, None, 0, ()
 
-    # build each byte
-    byte_data = np.ndarray(2, dtype=int)
-    byte_parity = np.ndarray(2, dtype=bool)
-    b_bits = np.ndarray(7, dtype=int)
-    b_stds = np.ndarray(7, dtype=float)
+    # ---- SLICING LEVEL ----
+    #
+    # The run-in's own mean is only a first guess at where to slice. It is measured at the
+    # head of the line and then asked to hold for all nineteen cells after it, and on tape
+    # it does not: measured over the 1994 KCET capture the two data levels sit at -0.348
+    # and +0.318 about it, so their real midpoint is 0.015 below where the run-in puts it,
+    # and the eye closes from 0.675 at the middle of the line to 0.628 at the last bit.
+    #
+    # Both are correctable from the line itself, because every cell is a sample of one
+    # level or the other. Taking the cells apart by which side they fell and fitting a line
+    # through each gives the two levels where they actually are, and the midpoint of those
+    # is where to slice. Worth 107 packets to 115 on that capture; on both 1998 KET
+    # captures it changes nothing, 337 and 397 either way, because a clean line's levels do
+    # not move.
+    #
+    # The three start bits go into the fit on the same footing as the rest, by which side
+    # they fell, rather than being pinned to the 0, 0, 1 they are known to be. Pinning them
+    # measures identically - 140 packets and the same captions either way - because the
+    # assertion above has already settled the only two that could have gone the other way.
+    # Each cell's mean and spread is two subtractions off the prefix sums, so the whole
+    # line is read once rather than once per cell. Nineteen cells of a dozen samples is
+    # far too little data to hand to numpy a cell at a time - the call overhead is worth
+    # more than the arithmetic - so the fitting below is plain Python over plain floats.
+    limit = len(normalized_line)
 
-    for i in range(2):
-        b_data_start = START_BIT_COUNT + i * 8
-        b_parity_idx = b_data_start + 7
-        b_worst_error_idx = 0
-        b_worst_error = 0
-        b_error_count = 0
-        b_parity_calculated = 1
+    # Every cell boundary, rounded once. The loop used to round both ends of each cell,
+    # which rounds every boundary twice over - and at two hundred and sixty thousand calls
+    # over six thousand lines that was a twelfth of the slicer's time.
+    edges = [round(preamble_end + index * bit_width)
+             for index in range(START_BIT_COUNT + DATA_BIT_COUNT + 1)]
 
-        # get data bits
-        for b_idx in range(0, 7):
-            bit, std = get_bit(b_idx + b_data_start, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)
-            b_bits[b_idx] = bit
-            b_stds[b_idx] = std
-            # gather parity
-            b_parity_calculated += bit
+    cells = []
+    spreads = []
+    for index in range(START_BIT_COUNT + DATA_BIT_COUNT):
+        first = edges[index] + bit_padding
+        last = edges[index + 1] - bit_padding
+        if first < 0 or last > limit or last <= first:
+            return None, None, 0, ()
+        width = last - first
+        # native floats from here on: these are scalars, and numpy's are several times
+        # dearer to add and compare than Python's own
+        mean = float(cumsum[last] - cumsum[first]) / width
+        cells.append(mean)
+        spreads.append(float(cumsum2[last] - cumsum2[first]) / width - mean * mean)
 
-            # check for possible errors
-            if std > min_std_dev_for_correction:
-               b_error_count += 1
-               if b_worst_error < std:
-                  b_worst_error_idx = b_idx
-                  b_worst_error = std
+    threshold = [float(normalized_median)] * len(cells)
+    for _ in range(LEVEL_FIT_PASSES):
+        high = [value > level for value, level in zip(cells, threshold)]
+        if high.count(True) < MIN_CELLS_PER_LEVEL or high.count(False) < MIN_CELLS_PER_LEVEL:
+            break
+        low_line = _level_line(cells, high, False)
+        high_line = _level_line(cells, high, True)
+        threshold = [0.5 * (a + b) for a, b in zip(low_line, high_line)]
 
-        # get parity bit
-        b_parity_calculated %= 2
-        b_parity_bit, b_parity_bit_std = get_bit(b_parity_idx, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)
+    margins = [abs(value - level)
+               for value, level in zip(cells[START_BIT_COUNT:], threshold[START_BIT_COUNT:])]
+    bits = [1 if value > level else 0
+            for value, level in zip(cells[START_BIT_COUNT:], threshold[START_BIT_COUNT:])]
 
-        # correct single bit errors using parity
-        if (
-            b_error_count == 1 # only one data bit error
-            and b_parity_bit != b_parity_calculated # parity miss-match
-            and b_parity_bit_std < min_std_dev_for_correction # parity bit is probably good
-        ):
-            b_bits[b_worst_error_idx] = 1 if b_bits[b_worst_error_idx] == 0 else 0
-            b_parity_calculated = b_parity_bit
+    noisy = 0
+    for bit_index, variance in enumerate(spreads[START_BIT_COUNT:]):
+        if variance > MIN_STD_DEV_FOR_CORRECTION * MIN_STD_DEV_FOR_CORRECTION:
+            noisy |= 1 << bit_index
 
-        # write out the bytes
-        byte_data[i] = (
-            b_bits[0]
-            | (b_bits[1] << 1)
-            | (b_bits[2] << 2)
-            | (b_bits[3] << 3)
-            | (b_bits[4] << 4)
-            | (b_bits[5] << 5)
-            | (b_bits[6] << 6)
-        )
-        byte_parity[i] = b_parity_bit == b_parity_calculated
+    # Scale by this line's own typical margin rather than a fixed level, so the number
+    # means the same thing on a strong line and a weak one. The median is the right middle
+    # here because the bits worth flagging are exactly the outliers.
+    eye = sorted(margins)[len(margins) // 2]
+    confidence = tuple(m / eye for m in margins) if eye > 0 else (0.0,) * DATA_BIT_COUNT
 
-    # uncomment to debug
+    byte1 = sum(bit << i for i, bit in enumerate(bits[0:8]))
+    byte2 = sum(bit << i for i, bit in enumerate(bits[8:16]))
+
     if debug_plot:
-        bits = [get_bit(i, bit_width, bit_padding, normalized_line, normalized_median, preamble_end)[0] for i in range(START_BIT_COUNT + DATA_BIT_COUNT)]
+        start_bits = [get_bit_value(i, bit_width, bit_padding, normalized_line,
+                                    normalized_median, preamble_end)
+                      for i in range(START_BIT_COUNT)]
         show_debug_plot(
             normalized_line,
             round(preamble_start),
             round(preamble_end),
             round(bit_width),
             best_score,
-            bits,
+            start_bits + bits,
             bit_width,
             bit_width_padding,
-            byte_data,
-            byte_parity
+            [byte1, byte2],
+            [cea608_byte(byte1, noisy, 0)[1], cea608_byte(byte2, noisy, 8)[1]]
         )
 
-    return byte_data[0], byte_parity[0], byte_data[1], byte_parity[1]
+    return byte1, byte2, noisy, confidence
 
 def show_debug_plot(line, preamble_start, preamble_end, width, best_score, bits, bit_width, bit_width_padding, byte_data, byte_parity):
     import numpy as np
@@ -742,57 +963,224 @@ def show_debug_plot(line, preamble_start, preamble_end, width, best_score, bits,
 
     plt.show()
 
-def find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_plot):
-    rows_found = []
-    field_0_idx = None
+def decode_row(img, row, min_correlation, debug_plot):
+    """ Slice one line, as `(row, byte1, byte2, noisy, confidence)`, or None
 
-    for row_idx in range(0, search_lines):
-        if field_0_idx and field_0_idx + 1 < row_idx:
-            # break if the second field was skipped
-            break
-        start_idx = row_idx + start_line
-        preamble_match = sync_to_preamble(img, start_idx)
+    The whole of the slicing, for one line. No format is assumed: the bytes come back as
+    they were on the wire and it is for each consumer - captions, XDS, StarSight - to say
+    what the eighth bit of each means. The decoder gives every line a process of its own
+    and calls this, since the lines of one field have nothing to say to each other.
 
-        if preamble_match is not None and preamble_match["score"] > min_correlation:
-            b1, b1_parity, b2, b2_parity = decode_bytes(
-                preamble_match["normalized_line"],
-                preamble_match["preamble_start"],
-                preamble_match["preamble_end"],
-                preamble_match["bit_width"],
-                preamble_match["score"],
-                debug_plot,
-            )
+    None means the line carried nothing this field - no run-in correlated well enough to
+    be worth slicing. A row whose start bits did not check out comes back with both bytes
+    None instead, because the line was there and the slicing is what failed, and the two
+    are not the same thing to a consumer counting what it missed.
+    """
+    match = sync_to_preamble(img, row)
+    if match is None or match["score"] <= min_correlation:
+        return None
 
-            rows_found.append((start_idx, b1, b1_parity, b2, b2_parity))
-            if field_0_idx == None:
-                field_0_idx = row_idx
+    byte1, byte2, noisy, confidence = decode_bytes(
+        match["normalized_line"],
+        match["preamble_start"],
+        match["preamble_end"],
+        match["bit_width"],
+        match["score"],
+        debug_plot,
+        match["cumsum"],
+        match["cumsum2"],
+    )
 
-    return rows_found
+    return (row, byte1, byte2, noisy, confidence)
 
-def extract_closed_caption_bytes(img, start_line, search_lines, min_correlation, debug_plot):
-    """ Returns a tuple of byte values from the passed image object that supports get_pixel_luma """
-    # text decoded code, is control, byte 1, byte 1 parity valid, byte 2, byte 2 parity valid
-    decoded_rows = []
-    for row_num, b1, b1_parity, b2, b2_parity in find_and_decode_rows(img, start_line, search_lines, min_correlation, debug_plot):
-        control = (b1, b2) in ALL_CC_CONTROL_CODES
-    
-        # handle parity errors
-        # https://www.law.cornell.edu/cfr/text/47/79.101
-        if not b2_parity:
-            if control:
+def cea608_byte(byte, noisy, offset):
+    """ Apply the CEA-608 byte layer to one raw byte
+
+    CEA-608 carries seven data bits and odd parity in the eighth. A single data bit
+    that was sliced from an unsettled window is corrected from the parity bit, which
+    is what the parity is there for. Returns `(value, parity_ok)`.
+    """
+    data = byte & 0x7F
+    parity_bit = byte >> 7
+    calculated = (bin(data).count('1') + 1) % 2
+
+    errors = [i for i in range(7) if noisy & (1 << (offset + i))]
+    if (
+        len(errors) == 1                              # only one data bit error
+        and parity_bit != calculated                  # parity miss-match
+        and not noisy & (1 << (offset + 7))           # parity bit is probably good
+    ):
+        data ^= 1 << errors[0]
+        calculated = parity_bit
+
+    return data, parity_bit == calculated
+
+def cea608_parity_ok(byte):
+    """ True if a raw byte carries valid CEA-608 odd parity
+
+    Seven data bits plus an odd parity bit means all eight sum odd. A line that fails
+    this far more often than noise explains is not carrying captions.
+    """
+    return bin(byte).count('1') % 2 == 1
+
+class LineParityRate:
+    """ How often each line's bytes carry valid CEA-608 odd parity
+
+    Shared measurement, because it is what tells the VBI services apart: a caption
+    line passes on very nearly every field, while StarSight - which uses the eighth bit
+    for data - and noise that merely correlated with the preamble pass at chance. Each
+    format decides for itself which side of that it wants.
+    """
+
+    MIN_FIELDS = 20
+
+    def __init__(self):
+        self._fields = Counter()
+        self._passed = Counter()
+
+    def update(self, row_num, byte1, byte2):
+        self._fields[row_num] += 1
+        if cea608_parity_ok(byte1) and cea608_parity_ok(byte2):
+            self._passed[row_num] += 1
+
+    def rate(self, row_num):
+        """ None until there are enough fields to judge the line """
+        seen = self._fields[row_num]
+        if seen < self.MIN_FIELDS:
+            return None
+        return self._passed[row_num] / seen
+
+    def seen(self, row_num):
+        """ How many fields this line has decoded on """
+        return self._fields[row_num]
+
+# What a VBI line is carrying. One line carries one service - a line is never shared - so
+# naming it once is enough for the whole pipeline to route by.
+LINE_CAPTIONS = 'captions'
+LINE_STARSIGHT = 'starsight'
+LINE_NOTHING = 'nothing'
+
+class LineService:
+    """ Which service a line carries, from the one measurement that tells them apart
+
+    CEA-608 spends the eighth bit of each byte on odd parity and so passes it on very
+    nearly every field; StarSight spends it on data and so passes at chance, as does a line
+    of noise that merely correlated with the preamble. What separates those last two is how
+    often the line is there at all: the guide is sent on every field, noise only sometimes.
+
+    Unmeasured lines are called captions, which is not a guess but the behavior the two
+    classes this replaced had between them: the caption side accepted a line while it was
+    still being measured, so captions are not held up at the start of a file, and the guide
+    side refused one, so guide data is never read from a line that has not been judged.
+    """
+
+    MIN_PARITY_RATE = 0.75
+    MIN_PRESENCE_RATE = 0.5
+
+    def __init__(self):
+        self._parity = LineParityRate()
+        self._frames = 0
+
+    def frame(self):
+        """ One more frame has been sliced, whether or not this line decoded on it """
+        self._frames += 1
+
+    def update(self, byte1, byte2):
+        self._parity.update(0, byte1, byte2)
+
+    def service(self):
+        rate = self._parity.rate(0)
+        if rate is None or rate >= self.MIN_PARITY_RATE:
+            return LINE_CAPTIONS
+        if self._parity.seen(0) >= self.MIN_PRESENCE_RATE * max(self._frames, 1):
+            return LINE_STARSIGHT
+        return LINE_NOTHING
+
+class Cea608Lines:
+    """ Which lines the caption formats should read
+
+    Every line in range is sliced and offered to every format, so the caption side has
+    to turn away lines that are not CEA-608. A line is accepted while it is still
+    being measured, so captions are never held up at the start of a file, and dropped
+    once its parity rate says it is carrying something else.
+    """
+
+    MIN_PARITY_RATE = 0.75
+
+    def __init__(self):
+        self._parity = LineParityRate()
+        self._rejected = set()
+
+    def update(self, row):
+        row_num, byte1, byte2 = row[:3]
+        if byte1 is None:
+            return
+
+        self._parity.update(row_num, byte1, byte2)
+        rate = self._parity.rate(row_num)
+        if rate is None:
+            return
+
+        if rate < self.MIN_PARITY_RATE:
+            self._rejected.add(row_num)
+        else:
+            self._rejected.discard(row_num)
+
+    def accepts(self, row_num):
+        return row_num not in self._rejected
+
+def decode_cea608_row(row):
+    """ Turn one raw row into the CEA-608 tuple its consumers expect
+
+    Returns None for a row the spec says to drop: a control code whose second byte
+    failed parity.
+    """
+    row_num, byte1, byte2, noisy = row[:4]
+
+    if byte1 is None:
+        # the start bits did not check out, so there are no bytes to read
+        return (row_num, decode_byte_pair(False, 0x7f, 0x7f), False, 0x7f, False, 0x7f, False)
+
+    b1, b1_parity = cea608_byte(byte1, noisy, 0)
+    b2, b2_parity = cea608_byte(byte2, noisy, 8)
+
+    control = (b1, b2) in ALL_CC_CONTROL_CODES
+
+    # handle parity errors
+    # https://www.law.cornell.edu/cfr/text/47/79.101
+    if not b2_parity:
+        if control:
+            return None
+        b2 = 0x7f
+
+    if not b1_parity and 0x10 <= b1 <= 0x1F:
+        # a damaged control code copy: on the KCET 1994 tape, 72 of 73 sit beside their clean twin
+        return None
+
+    if not b1_parity:
+        control = False # treat this as a print character when parity fails
+        b1 = 0x7f
+
+    return (row_num, decode_byte_pair(control, b1, b2), control, b1, b1_parity, b2, b2_parity)
+
+def decode_cea608_rows(rows, lines=None):
+    """ The CEA-608 byte layer over one frame of raw rows
+
+    Pass a `Cea608Lines` to have lines that are not carrying captions dropped. The
+    debug and status writers pass nothing, since they are there to show every line.
+    """
+    decoded = []
+    for row in rows:
+        if lines is not None:
+            lines.update(row)
+            if not lines.accepts(row[0]):
                 continue
-            else:
-                b2 = 0x7f
 
-        if not b1_parity:
-            control = False # treat this as a print character when parity fails
-            b1 = 0x7f
+        converted = decode_cea608_row(row)
+        if converted is not None:
+            decoded.append(converted)
+    return decoded
 
-        code = decode_byte_pair(control, b1, b2)
-        decoded_rows.append((row_num, code, control, b1, b1_parity, b2, b2_parity))
-
-    return decoded_rows
-    
 def get_output_function(extension, output_filename, end="\n"):
     if output_filename is not None:
         f = open(output_filename + f".{extension}", 'w')
@@ -812,8 +1200,9 @@ def decode_captions_raw(rx, output_filename, options):
          output_filename    - file name without extension to save decoded captions
     """
     setproctitle(current_process().name)
-    buff = ''  # CC Buffer
+    buff = {}  # CC Buffer, per line
     frame = 0
+    lines = Cea608Lines()
 
     out_func, f = get_output_function("captions.raw", output_filename)
 
@@ -825,20 +1214,23 @@ def decode_captions_raw(rx, output_filename, options):
         except:
             break
 
-        for row in rows:
+        for row in decode_cea608_rows(rows, lines):
             row_num, code, control, b1, _, b2, _ = row
 
             if code is None:
                 out_func('%i %i skip - no preamble' % (frame, row_num))
             else:
                 if code and not control:
-                    buff += code
-                elif buff:
-                    out_func('%i %i - [%02x, %02x] - Text:%s' % (frame, row_num, b1, b2, buff))
-                    buff = ''
+                    buff[row_num] = buff.get(row_num, '') + code
+                elif buff.get(row_num):
+                    out_func('%i %i - [%02x, %02x] - Text:%s' % (frame, row_num, b1, b2, buff.pop(row_num)))
                 if control:
                     out_func('%i %i - [%02x, %02x] - %s' % (frame, row_num, b1, b2, code))
         frame += 1
+
+    for row_num, text in buff.items():
+        if text:
+            out_func('%i %i - Text:%s' % (frame, row_num, text))
 
     if f is not None:
         f.close()
@@ -858,7 +1250,7 @@ def decode_captions_debug(rx, output_filename, options):
         except:
             break
 
-        for row in rows:
+        for row in decode_cea608_rows(rows):
            row_num, code, _, b1, b1_parity, b2, b2_parity = row
 
            if code is None:
@@ -873,16 +1265,27 @@ def decode_captions_debug(rx, output_filename, options):
     
     return codes
 
+def scc_timecode(frames):
+    """ Return a drop frame SCC timecode for a frame number """
+    frame_number = frames + 18 * (frames // 17982) + 2 * max(((frames % 17982) - 2) // 1798, 0)
+    frs = frame_number % 30
+    s = (frame_number // 30) % 60
+    m = ((frame_number // 30) // 60) % 60
+    h = (((frame_number // 30) // 60) // 60) % 24
+    return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
+
+
 class CaptionTrack:
     def __init__(self, cc_track, output_filename, options, extension):
         self._cc_track = cc_track
-        self._field_number = CC_CHANNEL_TO_FIELD[self._cc_track]
+        self._field_number = CC_CHANNEL_TO_FIELD.get(self._cc_track)
         self._output_filename = output_filename
         self._options = options
         self._extension = extension
 
         self.prev_code = None
         self.mode = "pop_on"
+        self.caption_mode = "pop_on"
 
         self._buffer_on_screen = []
         self._buffer_off_screen = []
@@ -957,6 +1360,7 @@ class CaptionTrack:
         elif 'Roll-Up Captions' in code:
             if code != self.prev_code:
                 self.global_start_roll_up(data, frames)
+            return True
         elif 'Resume Text Display' in code:
             if code != self.prev_code:
                 self.global_start_text_mode(data, frames)
@@ -970,19 +1374,29 @@ class CaptionTrack:
             # not a global code
             return False
         
+    def _end_roll_up(self):
+        if self.caption_mode == "roll_up":
+            # CEA-608-E C.10, C.11
+            self._buffer_on_screen = self._roll_up_buffer
+            self._roll_up_buffer = []
+
     def global_resume_loading(self, data, frames):
-        self.mode = "pop_on"
+        self._end_roll_up()
+        self.mode = self.caption_mode = "pop_on"
         
     def global_resume_direct(self, data, frames):
-        self.mode = "paint_on"
+        self._end_roll_up()
+        self.mode = self.caption_mode = "paint_on"
 
     def global_start_roll_up(self, data, frames):
         _, code, _, _, _, byte2, _ = data
 
-        self.mode = "roll_up"
+        if self.caption_mode != "roll_up":
+            # CEA-608-E C.10
+            self.global_erase_displayed_memory(data, frames)
+            self.global_erase_non_displayed_memory(data, frames)
+        self.mode = self.caption_mode = "roll_up"
         self.roll_up_length = ROLL_UP_LEN[byte2]
-        self.global_erase_displayed_memory(data, frames)
-        self.global_erase_non_displayed_memory(data, frames)
 
     def global_start_text_mode(self, data, frames):
         self.mode = "text"
@@ -993,15 +1407,17 @@ class CaptionTrack:
         raise NotImplemented
         
     def global_flip_buffers(self, data, frames):
+        self._end_roll_up()
         buffer_off_screen = self._buffer_off_screen
         self._buffer_off_screen = self._buffer_on_screen
         self._buffer_on_screen = buffer_off_screen
+        self.mode = self.caption_mode = "pop_on" # CEA-608-E C.10
     
     def global_erase_non_displayed_memory(self, data, frames):
         self._buffer_off_screen = []
 
     def global_erase_displayed_memory(self, data, frames):
-        if self.mode == "roll_up":
+        if self.caption_mode == "roll_up": # CEA-608-E C.16
             self._roll_up_buffer = []
         else:
             self._buffer_on_screen = []
@@ -1036,6 +1452,10 @@ class SCCCaptionTrack(CaptionTrack):
     def open(self):
         super().open()
         self.out('Scenarist_SCC V1.0\n')
+
+    def open_text(self):
+        super().open_text()
+        self.out_text('Scenarist_SCC V1.0\n')
 
     def global_resume_loading(self, data, frames):
         super().global_resume_loading(data, frames)
@@ -1082,11 +1502,17 @@ class SCCCaptionTrack(CaptionTrack):
 
     def add_text(self, data, frames):
         super().add_text(data, frames)
+        self.text_frame = frames
         _, code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code:
             self._write(self.out_text, self._text_buffer, frames)
             self.clear_text()
+
+    def close(self):
+        if len(self._text_buffer) > 0:
+            self._write(self.out_text, self._text_buffer, self.text_frame)
+        super().close()
 
     def write_text(self, frames):
         super().write_text(frames)
@@ -1101,16 +1527,11 @@ class SCCCaptionTrack(CaptionTrack):
         out_func('%s\t%s' % (self._get_timecode(frames), "".join(scc_data)))
 
     def _get_timecode(self, frames):
-        frame_number = frames + 18 * (frames / 17982) + 2 * max(((frames % 17982) - 2) / 1798, 0)
-        frs = frame_number % 30
-        s = (frame_number / 30) % 60
-        m = ((frame_number / 30) / 60) % 60
-        h = (((frame_number / 30) / 60) / 60) % 24
-        return '%02d:%02d:%02d;%02d' % (h, m, s, frs)
+        return scc_timecode(frames)
     
     def _get_subtitle_data(self, data):
         _, _, _, byte1, _, byte2, _ = data
-        return '%x%x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
+        return '%02x%02x ' % (NO_PARITY_TO_ODD_PARITY[byte1], NO_PARITY_TO_ODD_PARITY[byte2])
     
 class TextCaptionTrack(CaptionTrack):
     def __init__(self, cc_track, output_filename, options, extension = "txt"):
@@ -1121,6 +1542,8 @@ class TextCaptionTrack(CaptionTrack):
         self.space_character = " "
         self.line_break_character = "\n"
         self.output_end = ""
+        self.pending_indent = None
+        self.last_frame = 0
 
     def close(self):
         if len(self._text_buffer) > 0:
@@ -1128,9 +1551,29 @@ class TextCaptionTrack(CaptionTrack):
 
         super().close()
 
+    def add_data(self, data, frames):
+        _, code, _, byte1, _, byte2, _ = data
+        self.last_frame = frames
+        if byte1 == 0 and byte2 == 0:
+            self.prev_code = None # CEA-608-E D.2
+        elif 0x10 <= byte1 <= 0x1F and code == self.prev_code:
+            self.prev_code = None # CEA-608-E D.2, B.14
+            return
+
+        super().add_data(data, frames)
+
     def global_text_reset(self, data, frames):
         self.clear_text()
+        self.pending_indent = None # CEA-608-E 7.4
     
+    def row_length(self, caption_text):
+        return len(caption_text.split(self.line_break_character)[-1])
+
+    def backspace(self, caption_text):
+        if caption_text.endswith(self.line_break_character):
+            return caption_text # CEA-608-E B.12
+        return caption_text[0:-1]
+
     def dedupe_bad_data_from_text(self, code):
         if self.prev_char == None:
             self.prev_char = code
@@ -1142,12 +1585,14 @@ class TextCaptionTrack(CaptionTrack):
         self.prev_char = code
         return code
     
-    def handle_row(self, code, caption_text, current_row):
+    def handle_row(self, code, caption_text, current_row, rows):
         match = re.search(r'row (?P<row_number>\d+)$', code)
         if match:
             row = int(match.group("row_number"))
-            if current_row is not None and current_row < row:
-                caption_text += self.line_break_character
+            if row != current_row:
+                # CEA-608-E C.7
+                rows[current_row] = caption_text
+                caption_text = rows.pop(row, "")
             current_row = row
 
         return caption_text, current_row
@@ -1160,7 +1605,7 @@ class TextCaptionTrack(CaptionTrack):
     
     def handle_bs(self, code, caption_text):
         if code.endswith("Backspace"):
-            caption_text = caption_text[0:-1]
+            caption_text = self.backspace(caption_text)
 
         return caption_text
 
@@ -1168,7 +1613,7 @@ class TextCaptionTrack(CaptionTrack):
         tab_match = re.search(r'Tab Offset (?P<tab_offset>\d+)', code)
         if tab_match:
             tab = int(tab_match["tab_offset"])
-            tab = max(32 - len(caption_text), tab) # Tab Offsets shall not move the cursor beyond the 32nd column of the current row.
+            tab = max(min(31 - self.row_length(caption_text), tab), 0) # CEA-608-E C.13
             caption_text += self.space_character * tab
 
         return caption_text
@@ -1177,13 +1622,15 @@ class TextCaptionTrack(CaptionTrack):
         intent_match = re.search(r'Indent (?P<indent_offset>\d+)', code)
         if intent_match:
             indent = int(intent_match["indent_offset"])
-            caption_text += self.space_character * indent
+            caption_text += self.space_character * max(indent - self.row_length(caption_text), 0) # CEA-608-E C.7
         
         return caption_text
     
     def handle_character(self, caption_text, has_writable, byte1, byte2):
         code = decode_byte_pair(False, byte1, byte2, False)
         if code is not None:
+            if byte1 in (0x12, 0x13, 0x1A, 0x1B) and 0x20 <= byte2 <= 0x3F:
+                caption_text = self.backspace(caption_text) # CEA-608-E 6.4.2
             for char in str(code):
                if char != " ":
                    has_writable = True
@@ -1195,22 +1642,27 @@ class TextCaptionTrack(CaptionTrack):
         if "Mid-row" in code:
             # mid row style updates add a space
             caption_text += self.space_character
+        elif "Background" in code or "Foreground" in code:
+            caption_text = self.backspace(caption_text) + self.space_character # CEA-608-E 6.2
 
         return caption_text
 
-    def get_caption_text(self, data):
+    def get_caption_text(self, data, text_mode = False):
+        rows = {}
         current_row = None
         caption_text = ""
         has_writable = False
+        self.prev_char = None
         
         for _, code, control, byte1, byte1_parity, byte2, byte2_parity in data:
             if control:
                 # repeated control codes should be filtered out at this point
                 if byte1_parity and byte2_parity:
+                    if not text_mode: # CEA-608-E 7.4
+                        caption_text, current_row = self.handle_row(code, caption_text, current_row, rows)
                     # update style first to avoid using old style while adding spaces
                     caption_text = self.handle_style(code, caption_text)
                     # handle spacing updates
-                    caption_text, current_row = self.handle_row(code, caption_text, current_row)
                     caption_text = self.handle_cr(code, caption_text)
                     caption_text = self.handle_bs(code, caption_text)
                     caption_text = self.handle_tab(code, caption_text)
@@ -1219,7 +1671,9 @@ class TextCaptionTrack(CaptionTrack):
                 # get only a printable code (no byte values)
                 caption_text, has_writable = self.handle_character(caption_text, has_writable, byte1, byte2)
 
-        return caption_text, has_writable
+        rows[current_row] = caption_text
+        rows = [rows[row] for row in sorted(rows, key=lambda row: -1 if row is None else row) if row is not None or rows[row]]
+        return self.line_break_character.join(rows), has_writable
     
     # only enable text for .txt format
     def add_text(self, data, frames):
@@ -1230,26 +1684,33 @@ class TextCaptionTrack(CaptionTrack):
                 # only handle control characters once
                 super().add_text(data, frames)
                 if 'Carriage Return' in code:
+                    self.pending_indent = None
                     self.write_text(frames)
                     self.clear_text()
-                else:
-                    intent_match = re.search(r'.*Indent (?P<indent_offset>\d+)', code)
-                    if intent_match:
-                        # compatibility with TeleCaption I decoder
-                        # when there's a data interruption, the decoder resets the cursor to first column
-                        # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
-                        # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
-                        self._text_buffer = []
-                        # re-add the indent code
-                        super().add_text(data, frames)
+                elif 'Pre:' in code: # CEA-608-E 7.4
+                    # compatibility with TeleCaption I decoder
+                    # when there's a data interruption, the decoder resets the cursor to first column
+                    # for forwards compatibility, an indent is sent without a carriage return to avoid repeated characters
+                    # see ANSI-CEA-608-E, Annex D.3 Text-Mode Multiplexing (Informative), pg. 78
+                    #
+                    # the reset waits for a character to actually arrive. A text
+                    # service sends the indent both before a retransmitted line and
+                    # again just before the carriage return that commits it, so
+                    # clearing here outright would throw the line away a moment
+                    # before it is written.
+                    self.pending_indent = len(self._text_buffer) - 1
         else:
+            if self.pending_indent is not None:
+                # characters are following the indent, so the line is being sent again
+                self._text_buffer = self._text_buffer[self.pending_indent:]
+                self.pending_indent = None
             super().add_text(data, frames)
 
         self.previous_frames = frames
 
     def write_text(self, frames):
         super().write_text(frames)
-        caption_text, _ = self.get_caption_text(self._text_buffer)
+        caption_text, _ = self.get_caption_text(self._text_buffer, True)
         self.out_text(caption_text)
 
     def add_on_screen(self, data, frames):
@@ -1279,6 +1740,9 @@ class SRTCaptionTrack(TextCaptionTrack):
         self.fps = options["frame_rate"]
 
     def close(self):
+        displayed = self._roll_up_buffer if self.caption_mode == "roll_up" else self._buffer_on_screen
+        if len(displayed) > 0:
+            self.write_caption(displayed, self.last_frame)
         if len(self._text_buffer) > 0:
             self.write_text(self.text_current_frame)
 
@@ -1287,12 +1751,14 @@ class SRTCaptionTrack(TextCaptionTrack):
     def global_resume_direct(self, data, frames):
         # start a new subtitle entry
         super().global_resume_direct(data, frames)
-        self.subtitle_start_frame = frames
-        self._roll_up_buffer = []
+        if len(self._buffer_on_screen) == 0:
+            self.subtitle_start_frame = frames # CEA-608-E C.10
 
     def global_start_roll_up(self, data, frames):
+        starting = self.caption_mode != "roll_up"
         super().global_start_roll_up(data, frames)
-        self.subtitle_start_frame = frames
+        if starting:
+            self.subtitle_start_frame = frames
 
     def global_start_text_mode(self, data, frames):
         super().global_start_text_mode(data, frames)
@@ -1300,12 +1766,15 @@ class SRTCaptionTrack(TextCaptionTrack):
             self.text_start_frame = frames
 
     def global_flip_buffers(self, data, frames):
+        displayed = self._roll_up_buffer if self.caption_mode == "roll_up" else self._buffer_on_screen
+        if len(displayed) > 0:
+            self.write_caption(displayed, frames) # CEA-608-E B.8.3
         super().global_flip_buffers(data, frames)
         self.subtitle_start_frame = frames
 
     def global_erase_displayed_memory(self, data, frames):
         # end the subtitle and write to the screen
-        if self.mode == "roll_up":
+        if self.caption_mode == "roll_up":
             if len(self._roll_up_buffer) > 0:
                 self.write_caption(self._roll_up_buffer, frames)
         else:
@@ -1324,23 +1793,20 @@ class SRTCaptionTrack(TextCaptionTrack):
         self._buffer_off_screen.append(data)
 
     def add_on_screen_roll_up(self, data, frames):
-        self._roll_up_buffer.append(data)
+        _, code, _, _, _, _, _ = data
+        if code.endswith("Carriage Return"):
+            # CEA-608-E 7.4
+            if len(self._roll_up_buffer) > 0:
+                self.write_caption(self._roll_up_buffer, frames)
+            self.subtitle_start_frame = frames
 
-        #line_breaks = []
-        #for i in range(len(self._roll_up_buffer)):
-        #    if self._roll_up_buffer[i][0].endswith("Carriage Return"):
-        #        line_breaks.append(i)
-        #
-        # roll-up the captions
-        #print(len(line_breaks), self.roll_up_length)
-        #if len(line_breaks) > self.roll_up_length:
-        #    # keep the last n rows
-        #    lines_to_remove = line_breaks[-(self.roll_up_length)]
-        #    # roll-up and away the oldest row
-        #    self._roll_up_buffer = self._roll_up_buffer[lines_to_remove+1:]
-        #    # trigger a subtitle update
-        #    self._write(self._roll_up_buffer, frames)
-        #    self.subtitle_start_frame = frames
+            line_breaks = [i for i, d in enumerate(self._roll_up_buffer) if d[1].endswith("Carriage Return")]
+            if len(line_breaks) >= self.roll_up_length - 1:
+                self._roll_up_buffer = self._roll_up_buffer[line_breaks[-(self.roll_up_length - 1)] + 1:]
+            if len(self._roll_up_buffer) == 0:
+                return
+
+        self._roll_up_buffer.append(data)
 
     def add_text(self, data, frames):
         super().add_text(data, frames)
@@ -1348,7 +1814,7 @@ class SRTCaptionTrack(TextCaptionTrack):
 
     def write_text(self, frames):
         self.text_end_frame = frames
-        caption_text, has_writable = self.get_caption_text(self._text_buffer)
+        caption_text, has_writable = self.get_caption_text(self._text_buffer, True)
         if has_writable:
             CaptionTrack.write_text(self, frames)
             self._write(
@@ -1382,12 +1848,9 @@ class SRTCaptionTrack(TextCaptionTrack):
 
     def _get_timecode(self, frames):
         """ Returns an SRT format timestamp """
-        seconds = frames / self.fps
-        milliseconds = int((seconds - int(seconds)) * 1000)
-        hours = int(seconds / 3600)
-        minutes = int((seconds - 3600 * hours) / 60)
-        seconds_disp = seconds - (minutes * 60 + hours * 3600)
-        return '%02d:%02d:%02d,%03d' % (hours, minutes, seconds_disp, milliseconds)
+        milliseconds = round(frames * 1000 / self.fps)
+        return '%02d:%02d:%02d,%03d' % (milliseconds // 3600000, milliseconds // 60000 % 60,
+                                        milliseconds // 1000 % 60, milliseconds % 1000)
 
 class HTMLCaptionTrack(TextCaptionTrack):
     def __init__(self, cc_track, output_filename, options, extension = "html"):
@@ -1427,7 +1890,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
         self._text_style = self._default_text_style
         self._font_style = self._default_font_style
 
-    def get_html_start(self, channel_type):
+    def get_html_start(self, channel_type, channel=None):
         base_style = "body { font-family: monospace, monospace; background-color: black; } pre { margin: 0; display: inline; }"
         text_styles = ".underline { text-decoration: underline; } .italics { font-style: italic; } @keyframes blink { 50% { color: transparent; } } .flashing { animation: blink step-start 1s infinite; }"
         background_colors = ".background-transparent { background-color: transparent; }" + " ".join([f".background-{color_key.lower()} {{ background-color: {color_value}; }}" for color_key, color_value in self.colors.items()])
@@ -1437,7 +1900,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
 
         style_tag = "<style>" + "\n".join([base_style, text_styles, background_colors, background_st_colors, text_colors, font_sizes]) + " </style>"
 
-        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>{self._cc_track} {channel_type}</title>{style_tag}</head><body>{self._element_line_break}<div id='captions' >{self.get_pre_tag()}"
+        return f"<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='description' content='Decoded by https://github.com/eshaz/cc_decoder'><title>{channel or self._cc_track} {channel_type}</title>{style_tag}</head><body>{self._element_line_break}<div id='captions' >{self.get_pre_tag()}"
     
     def get_html_end(self):
         return f"</pre>{self._element_line_break}</div></body></html>"
@@ -1457,9 +1920,15 @@ class HTMLCaptionTrack(TextCaptionTrack):
 
     def open_text(self):
         super().open_text()
-        self.out_text(self.get_html_start("Text Mode"))
+        self.out_text(self.get_html_start("Text Mode", CC_CHANNEL_TO_TEXT_CHANNEL[self._cc_track]))
 
     def close(self):
+        displayed = self._roll_up_buffer if self.caption_mode == "roll_up" else self._buffer_on_screen
+        if len(displayed) > 0:
+            self.write_caption(displayed, self.last_frame, True)
+        if len(self._text_buffer) > 0:
+            self.write_text(self.last_frame)
+
         html_end = self.get_html_end()
     
         if self.f is not None:
@@ -1469,14 +1938,15 @@ class HTMLCaptionTrack(TextCaptionTrack):
             self.out_text(html_end)
             self.f_text.close()
 
-    def global_resume_direct(self, data, frames):
-        # start a new subtitle entry
-        super().global_resume_direct(data, frames)
-        self._roll_up_buffer = []
+    def global_flip_buffers(self, data, frames):
+        displayed = self._roll_up_buffer if self.caption_mode == "roll_up" else self._buffer_on_screen
+        if len(displayed) > 0:
+            self.write_caption(displayed, frames, True) # CEA-608-E B.8.3
+        super().global_flip_buffers(data, frames)
 
     def global_erase_displayed_memory(self, data, frames):
         # end the subtitle and write to the screen
-        if self.mode == "roll_up":
+        if self.caption_mode == "roll_up":
             if len(self._roll_up_buffer) > 0:
                 self.write_caption(self._roll_up_buffer, frames, True)
         else:
@@ -1486,7 +1956,32 @@ class HTMLCaptionTrack(TextCaptionTrack):
         # clear the on screen buffer
         super().global_erase_displayed_memory(data, frames)
 
+    def handle_row(self, code, caption_text, current_row, rows):
+        caption_text, row = super().handle_row(code, caption_text, current_row, rows)
+        if row != current_row:
+            self._background_color = self._default_background_color # CEA-608-E 6.2
+        return caption_text, row
+
+    def handle_cr(self, code, caption_text):
+        if code.endswith("Carriage Return"):
+            # CEA-608-E 6.2, C.14
+            self._background_color = self._default_background_color
+            self._text_color = self._default_text_color
+            self._text_style = self._default_text_style
+            caption_text = f"{caption_text}{self.line_break_character}</pre>{self.get_pre_tag()}"
+        return caption_text
+
+    def row_length(self, caption_text):
+        return len(unescape(re.sub(r'<[^>]*>', '', caption_text.split(self.line_break_character)[-1])))
+
+    def backspace(self, caption_text):
+        return re.sub(r"(&[#\w]+;|[^>])((?:</pre>|<!--\n-->|<pre [^>]*>)*)$", r"\2", caption_text, count=1)
+
     def handle_style(self, code, caption_text):
+        attribute = "Background" in code or "Foreground" in code
+        if attribute:
+            caption_text = self.backspace(caption_text) # CEA-608-E 6.2
+
         color = None
         color_match = re.search(self.colors_regex, code)
         if color_match:
@@ -1498,7 +1993,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
             # background color update
             if color:
                 if "Semi-Transparent" in code:
-                    self._background_color = "background-semi-transparent-" + color
+                    self._background_color = "background-" + color + "-semi-transparent"
                 else:
                     self._background_color = "background-" + color
             elif "Background Transparent" in code:
@@ -1508,7 +2003,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
         else:
             # check for text color / style updates
             is_pre = "Pre:" in code
-            is_mid = "Mid-row" in code
+            is_mid = "Mid-row" in code or "Foreground" in code  # CEA-608-E 6.2
 
             # mid-row updates for style, (i.e. underline, italics, flashing) without a color specified DO NOT clear the color
             # mid-row updates for color without a style specified DO clear the style
@@ -1529,6 +2024,8 @@ class HTMLCaptionTrack(TextCaptionTrack):
                 self._text_style += " flashing"
 
         caption_text = f"{caption_text}</pre>{self.get_pre_tag()}"
+        if attribute:
+            caption_text += self.space_character
 
         if "Mid-row" in code:
             # mid row style updates add a space without text color or text style
@@ -1559,6 +2056,7 @@ class HTMLCaptionTrack(TextCaptionTrack):
     def add_on_screen_roll_up(self, data, frames):
         self._roll_up_buffer.append(data)
 
+
 class CaptionTrackFactory():
     def __init__(self, track_class, output_filename, options):
         self._field_to_active_track = [None, None] # stores the active track for each field
@@ -1567,16 +2065,49 @@ class CaptionTrackFactory():
         self._output_filename = output_filename
         self._track_class = track_class
         self._options = options
+        self._lines = Cea608Lines()
+        self._misc_codes = Counter() # miscellaneous control codes seen, by row and field
+        self._xds_rows = set() # field 2 rows part way through an XDS packet
 
     def add_data(self, rows, frame):
-        for row in rows:
+        for row in decode_cea608_rows(rows, self._lines):
             detected_field = None
-            row_num, code, _, b1, b1_parity, _, b2_parity = row
+            row_num, code, _, b1, b1_parity, b2, b2_parity = row
+
+            # Which field a row carries. Only the miscellaneous control codes differ between
+            # the two - 0x14/0x1C on field 1, 0x15/0x1D on field 2 - so a row is field 2 once it
+            # has sent more of field 2's.
+            if b1_parity and b2_parity and b1 in (0x14, 0x1C, 0x15, 0x1D) and 0x20 <= b2 <= 0x2F:
+                self._misc_codes[row_num, b1 & 1] += 1
+            field_two = self._misc_codes[row_num, 1] > self._misc_codes[row_num, 0]
+            if b1_parity and b2_parity and b1 in (0x14, 0x1C, 0x15, 0x1D) and 0x20 <= b2 <= 0x2F and (b1 & 1) != field_two:
+                continue # CEA-608-E 8.4
+
+            # XDS shares field 2 with CC3, CC4, T3 and T4. From an XDS control byte until the
+            # next caption control code, the row is carrying XDS, not caption text (CEA-608-E
+            # 7.7 and 8.6.2). A first byte in either range has passed parity, since a failed one
+            # comes back as 0x7f. Field 1 is left alone: KET's text service sends bytes in
+            # 0x01-0x0F as part of its own stream.
+            if field_two:
+                if 0x01 <= b1 <= 0x0F:
+                    self._xds_rows.add(row_num)
+                    track = self._field_to_active_track[1]
+                    if track is not None:
+                        track.prev_code = None # CEA-608-E D.2
+                        if track.mode == "text":
+                            track.mode = None # CEA-608-E 7.7
+                    continue
+                if 0x10 <= b1 <= 0x1F:
+                    self._xds_rows.discard(row_num)
+                elif row_num in self._xds_rows:
+                    continue
 
             # determine field for row
             if b1_parity and b2_parity:
-                cc_track = code[:3]
-                if cc_track in CC_CHANNEL_TO_FIELD:
+                # the data channel is in the code, and the field is the row's
+                data_channel = CC_DATA_CHANNEL.get(code[:3])
+                if data_channel is not None:
+                    cc_track = 'CC%d' % (data_channel + 2 * field_two)
                     # cc channels have a defined field order
                     detected_field = CC_CHANNEL_TO_FIELD[cc_track]
                     self._row_to_field[row_num] = detected_field
@@ -1586,11 +2117,6 @@ class CaptionTrackFactory():
                         self._tracks[cc_track] = self._track_class(cc_track, self._output_filename, self._options)
 
                     self._field_to_active_track[detected_field] = self._tracks[cc_track]
-
-                # elif b1 < 0x0f and b1 > 0x00:
-                #     # xds data is always field 1
-                #     detected_field = 1
-                #     self._row_to_field[row_num] = detected_field
 
             # add data
             if row_num in self._row_to_field:
@@ -1721,7 +2247,7 @@ def decode_xds_time_of_day(packet_bytes):
     zero_seconds = 'Z' if pbytes[3] & 0x20 else '_'
     tape_delayed = 'T' if pbytes[3] & 0x10 else 'S'
     leap_day = 'L' if pbytes[2] & 0x20 else 'A'
-    day_of_month = ( pbytes[2] - 0x40 )  # TODO: There is some possible interaction with leapday here, ignore for now
+    day_of_month = pbytes[2] & 0x1F  # CEA-608-E Table 15
 
     month_key = pbytes[3] & 0xF
     month = XDS_MONTH[month_key] if month_key in XDS_MONTH else "--"
@@ -1735,15 +2261,13 @@ def decode_xds_time_of_day(packet_bytes):
     return f'TM {hours:0>2}:{minutes:0>2}{dst} {zero_seconds}{tape_delayed}{leap_day} {month} {day_of_month:0>2} {year} {day_of_week}'
 
 def decode_xds_local_time_zone(pbytes):
-    # TODO: convert to +-12
     """ Decode the Local Time Zone packets """
     _assert_len(pbytes, 2)
     data, _ = pbytes.pop(0)
 
-    tz = -(data & 0b11111)
-    if tz > 11:
-        tz = 24 - tz
-    dst = 'DST' if (data & 0b100000) else 'ST'
+    tz = data & 0b11111  # CEA-608-E Table 38
+    tz = 24 - tz if tz > 11 else -tz
+    dst = 'observes DST' if (data & 0b100000) else 'no DST'
 
     return f'{tz} {dst}'
 
@@ -1751,12 +2275,14 @@ def decode_xds_content_advisory(pbytes):
     """ Decode content advisory packet, returning a string describing the rating """
     _assert_len(pbytes, 2)
     ca1, ca2 = pbytes.pop(0)
-    system = ca1 & 24 >> 3
+    # a1 a0 are bits 4 and 3 of the first character (CEA-608-E Table 18). Written unbracketed,
+    # `>>` binds before `&` and this read the MPA rating's own low bits instead.
+    system = (ca1 >> 3) & 3
     rating = ''
     if system == 0 or system == 2:  # MPA
         rating = MPA_RATING[ca1 & 7]
     elif system == 1:  # US TV Parent Guidelines
-        rating_code = ca1 & 7
+        rating_code = ca2 & 7  # g2-g0 are in the second character, not the first
         rating = US_TV_PARENTAL_GUIDELINE_RATING[rating_code]
         if rating_code == 2:
             rating += ' Fantasy Violence' if ca2 & 32 else ''
@@ -1764,12 +2290,13 @@ def decode_xds_content_advisory(pbytes):
             rating += ' Violence' if ca2 & 32 else ''
             rating += ' Sexual Situations' if ca2 & 16 else ''
             rating += ' Adult Language' if ca2 & 8 else ''
-            rating += ' Sexually Suggestive Dialogue' if ca1 & 32 else ''
+            rating += ' Sexually Suggestive Dialogue' if ca1 & 32 and rating_code != 6 else ''  # CEA-608-E Table 21
     elif system == 3:  # International
-        subsystem = (ca1 & 32 >> 5) + (ca2 & 8 >> 2)
-        if subsystem == 1:  # CAD English
+        # a2 is bit 5 of the first character and a3 bit 3 of the second (Table 19)
+        subsystem = ((ca2 >> 3) & 1, (ca1 >> 5) & 1)
+        if subsystem == (0, 0):  # CAD English
             rating = CANADIAN_ENGLISH_RATINGS[ca2 & 7]
-        elif subsystem == 2:
+        elif subsystem == (0, 1):
             rating = CANADIAN_FRENCH_RATINGS[ca2 & 7]
         else:  # Reserved for some international system
             rating = 'International reserved code %s' % str((ca1, ca2))
@@ -1782,10 +2309,15 @@ def describe_xds_packet(packet_bytes):
         if not compute_xds_packet_checksum(packet_bytes):
             return 'XDS Rejected Packet - Incorrect Checksum'
         b1, b2 = packet_bytes.pop(0)
-        if b1 <= 0x02 and b2 <= 0x03:  # TODO continues
-            pref = ['Current', 'Next Program'][b1-1]
+        del packet_bytes[-1:]  # CEA-608-E 8.6.1
+        if len(packet_bytes) > 16:  # CEA-608-E 8.6.6
+            return 'XDS Rejected Packet - Too Long'
+        if b1 in (0x01, 0x03) and b2 <= 0x03:  # CEA-608-E 9.5.2
+            pref = ['Current', 'Future'][b1 // 2]
             if b2 == 0x01:  # Program identification number
                 _assert_len(packet_bytes, 4)
+                if packet_bytes[:2] == [(0x7F, 0x7F)] * 2:  # CEA-608-E 9.5.1.1
+                    return 'XDS %s End of Program' % pref
                 minutes, hours = decode_xds_minutes_hours(packet_bytes, short=True)
                 dateb, monthb = packet_bytes.pop(0)
                 tape_delay = '(Tape Delayed)' if (monthb & 16) else ''
@@ -1817,9 +2349,9 @@ def describe_xds_packet(packet_bytes):
                 return decode_xds_content_advisory(packet_bytes)
             elif b2 == 0x06:  # Audio services
                 main, sap = packet_bytes.pop(0)
-                main_language = XDS_AUDIO_SERVICES_LANGUAGE[main & 56 >> 3]
+                main_language = XDS_AUDIO_SERVICES_LANGUAGE[(main >> 3) & 7]
                 main_type = XDS_AUDIO_SERVICES_TYPE_MAIN[main & 7]
-                sap_language = XDS_AUDIO_SERVICES_LANGUAGE[sap & 56 >> 3]
+                sap_language = XDS_AUDIO_SERVICES_LANGUAGE[(sap >> 3) & 7]
                 sap_type = XDS_AUDIO_SERVICES_TYPE_SECONDARY[sap & 7]
                 return 'XDS Audio Services: Main:%s(%s) Sap:%s(%s)' % (main_language, main_type, sap_language, sap_type)
             elif b2 == 0x07:  # Caption services
@@ -1827,8 +2359,8 @@ def describe_xds_packet(packet_bytes):
             elif b2 == 0x08:  # Copy and Redistribution Control Packe
                 _assert_len(packet_bytes, 2)
                 c1, _ = packet_bytes.pop(0)
-                copying = XDS_CGMS[c1 & 24 >> 3]
-                protection = XDS_CGMS_APS[c1 & 7]
+                copying = XDS_CGMS[(c1 >> 3) & 3]       # CGMS-A is b4 b3
+                protection = XDS_CGMS_APS[(c1 >> 1) & 3]  # APS is b2 b1; b0 is ASB
                 return 'XDS Copy protection: %s %s' % (copying, protection)
             elif b2 == 0x09:  # Aspect ratio
                 _assert_len(packet_bytes, 2)
@@ -1837,7 +2369,7 @@ def describe_xds_packet(packet_bytes):
                 if packet_bytes:
                     anamorp, _ = packet_bytes.pop(0)
                 return 'XDS Aspect Ratio: start line: %i end line: %i %s' \
-                       % (22 + (startl & 63), 262 - (endl & 63), (anamorp & 1) and 'Anamorphic')
+                       % (22 + (startl & 63), 262 - (endl & 63), 'Anamorphic' if anamorp & 1 else '')
             elif b2 == 0x0c:  # Composite packet
                 return 'Composite packet 1 %d' % len(packet_bytes)  # TODO - pending confirmation of the spec
 
@@ -1850,7 +2382,10 @@ def describe_xds_packet(packet_bytes):
             if b2 == 0x01:  # Network Name (Affiliation)
                 return 'XDS Channel Name: %s' % decode_xds_string(packet_bytes)
             if b2 == 0x02:  # Call Letters (Station ID) and Native Channel 
-                return 'XDS Channel Station Call-Sign: %s' % decode_xds_string(packet_bytes)
+                call_letters = decode_xds_string(packet_bytes)
+                if call_letters[4:].isdigit():  # CEA-608-E 9.5.3.2
+                    return 'XDS Channel Station Call-Sign: %s Native Channel: %s' % (call_letters[:4].strip(), call_letters[4:])
+                return 'XDS Channel Station Call-Sign: %s' % call_letters
             if b2 == 0x03:  # Tape delay
                 minutes, hours = decode_xds_minutes_hours(packet_bytes, short=True)
                 return 'XDS Channel Tape Delay: %02i:%02i' % (hours, minutes)
@@ -1889,9 +2424,17 @@ def describe_xds_packet(packet_bytes):
 def decode_xds_packets(rx, output_filename, options):
     setproctitle(current_process().name)
     frame = 0
-    packetbuf = []
-    xds_row = -1
-    gather_xds_bytes = False
+    lines = Cea608Lines()
+
+    # Every line is read as its own stream
+    # Following one line across the file let any XDS-range byte on another line take it
+    # over part way through a packet, and KET's field 1 text service sends hundreds of them.
+    #
+    # A packet can be interrupted by captions, Text or another packet and resumed later with its
+    # Continue code (CEA-608-E 8.6), so each one a line has begun is kept until its End.
+    current = {}  # line -> the packet it is sending, absent between packets
+    begun = {}    # (line, class, type) -> the packet's pairs, from its Start on
+    nulls = {}
 
     out_func = None
     f = None
@@ -1906,37 +2449,55 @@ def decode_xds_packets(rx, output_filename, options):
 
         frame += 1
 
-        # check for xds row, and replace row if found in another row
-        for row in rows:
-            row_num, code, _, b1, b1_parity, b2, b2_parity = row
+        # the second byte of each line as it was sliced, before parity was applied to it
+        sliced = {row[0]: row[2] for row in rows}
 
-            if b1 > 0 and b1 <= 0xf and b1_parity and b2_parity:
-                xds_row = row_num
+        for row_num, _, _, b1, _, b2, b2_parity in decode_cea608_rows(rows, lines):
+            if b1 == 0 and b2 == 0:  # Stuffing, ignore and continue
+                if row_num in current:
+                    nulls[row_num] = nulls.get(row_num, 0) + 1
+                continue
+            held = nulls.pop(row_num, 0)
 
-        # if xds is found, read it
-        if xds_row != -1:
-            for row in rows:
-                row_num, code, _, b1, b1_parity, b2, b2_parity = row
+            if 0x01 <= b1 <= 0x0e:
+                # A Start (odd) begins a packet, or begins it again. A Continue (even) resumes
+                # one, and is not kept, as it is not part of the checksum.
+                key = (row_num, (b1 + 1) // 2, b2)
+                if b1 & 1:
+                    begun[key] = [(b1, b2)]
+                if key in begun:
+                    current[row_num] = key
+                else:
+                    current.pop(row_num, None)
+            elif b1 == 0x0f:
+                # An End closes the packet being sent. One with nothing open is a lost Start,
+                # not a packet, so there is nothing to report.
+                key = current.pop(row_num, None)
+                if key is None:
+                    continue
 
-                if xds_row == row_num:
-                    if code is not None:
-                        if not (b1 == 0 and b2 == 0):  # Stuffing, ignore and continue
-                            if b1 <= 0x0e:  # Start of XDS packet'
-                                gather_xds_bytes = True
-                            if gather_xds_bytes:
-                                packetbuf.append((b1, b2))
-                            if b1 == 0x0f:  # End of XDS packet
-                                gather_xds_bytes = False
-                                try:
-                                    if out_func == None:
-                                        out_func, f = get_output_function("xds", output_filename)
-    
-                                    out_func(f"{frame}: {describe_xds_packet(packetbuf)}")
-                                except KeyError as e:
-                                    print("WARN: Unhandled key error in XDS data, may be bad data or a bug", e, file=sys.stderr)
-                                    pass
-                                packetbuf = []
-                    break
+                # The checksum covers all seven data bits of its own byte, so it says for
+                # itself whether they are right, and the byte's parity bit adds nothing. Nor can
+                # the bit be trusted: KCET's 1994 encoder sets it whenever bit 6 is set, as well
+                # as when parity needs it, so every checksum from 0x40 up with an odd number of
+                # ones goes out with even parity - 10,740 of 23,126 packets over the whole tape,
+                # its call sign every time. The waveform is clean; that is what was sent.
+                if not b2_parity:
+                    b2 = sliced[row_num] & 0x7f
+
+                try:
+                    if out_func == None:
+                        out_func, f = get_output_function("xds", output_filename)
+
+                    out_func(f"{frame}: {describe_xds_packet(begun.pop(key) + [(b1, b2)])}")
+                except (KeyError, IndexError, RuntimeWarning) as e:
+                    print("WARN: Unhandled error in XDS data, may be bad data or a bug", e, file=sys.stderr)
+            elif 0x10 <= b1 <= 0x1f:
+                # a caption or Text control code: the line has gone back to captions
+                current.pop(row_num, None)
+            elif row_num in current:
+                # CEA-608-E 8.6.1: nulls between characters hold places, nulls before a control code are filler
+                begun[current[row_num]] += [(0, 0)] * held + [(b1, b2)]
 
     if f is not None:
         f.close()
