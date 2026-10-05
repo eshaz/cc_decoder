@@ -31,7 +31,7 @@ from multiprocessing import current_process
 
 from setproctitle import setproctitle
 
-from lib.cc_decode import LineParityRate, get_output_function, scc_timecode
+from lib.cc_decode import CC_TABLE, LineParityRate, get_output_function, scc_timecode
 from lib.starsight_table import STARSIGHT_HUFFMAN, STARSIGHT_HUFFMAN_MAX_BITS
 
 
@@ -160,6 +160,9 @@ DESCRIPTION_EXTENDED = 0x08
 ADVISORY_NAMES = ((0x02, 'nudity'), (0x04, 'violence'), (0x08, 'adult situations'),
                   (0x10, 'adult themes'), (0x80, 'adult language'))
 
+# The other three bits, unset on all 55 extended descriptions the captures carry.
+ADVISORY_UNKNOWN = ((0x01, 'unknown bit 0'), (0x20, 'unknown bit 5'), (0x40, 'unknown bit 6'))
+
 # Byte 7 of the extended form: a critic's star rating above a film rating. SSLOAD.DLL
 # writes the stars into the description as that many '*', and they follow the films in
 # docs/samples: The Best Years of Our Lives, Lifeboat and The King and I have 4, Sheena 1.
@@ -190,7 +193,7 @@ def tv_rating(text):
 
 def description_advisories(advisories):
     """ The content advisories named by the extended form's byte 8 """
-    return [name for mask, name in ADVISORY_NAMES if advisories & mask]
+    return [name for mask, name in ADVISORY_NAMES + ADVISORY_UNKNOWN if advisories & mask]
 
 # A Show List's channel id is 15 bits; SSLOAD.DLL masks the high byte before using it.
 CHANNEL_ID_MASK = 0x7FFF
@@ -1422,6 +1425,7 @@ if(guide){
     var start=new Date(from.getTime()+at*60000);
     var stop=new Date(start.getTime()+run*60000);
     var flags=(cell.getAttribute('f')||'').split('').map(function(f){return NAMES[f]});
+    if(cell.classList.contains('joined')) flags.push('already in progress');
 
     box.ch.textContent=cell.closest('.row').querySelector('.badge').textContent;
     var text=window.DESC&&DESC[cell.getAttribute('d')];
@@ -1429,7 +1433,8 @@ if(guide){
     box.show.textContent='show '+cell.getAttribute('n')
       +(cell.getAttribute('t')?'  theme '+cell.getAttribute('t'):'')
       +(cell.getAttribute('d')?'  description '+cell.getAttribute('d'):'')
-      +(cell.getAttribute('g')?'  group '+cell.getAttribute('g'):'');
+      +(cell.getAttribute('g')?'  group '+cell.getAttribute('g'):'')
+      +(cell.getAttribute('x')?'  flag byte 0x'+(+cell.getAttribute('x')).toString(16):'');
     box.time.textContent=start.toDateString().slice(0,10).toUpperCase()
       +'  '+clock(start)+'-'+clock(stop)+'  '+run+' min';
     box.flags.textContent=flags.join(', ');
@@ -1473,7 +1478,7 @@ def _clock_label(when):
     hour = when.hour % 12 or 12
     return '%d:%02d%s' % (hour, when.minute, 'A' if when.hour < 12 else 'P')
 
-def _guide_grid(out_func, slots, titles, descriptions, offset):
+def _guide_grid(out_func, slots, titles, descriptions, offset, labels):
     """ The schedule laid out the way the guide itself laid it out
 
     Channels down the side, half hours across the top, and a program drawn as one
@@ -1532,8 +1537,11 @@ def _guide_grid(out_func, slots, titles, descriptions, offset):
     out_func("</div></div>")
 
     for channel in sorted(channels):
-        out_func("<div class='row'><div class='badge'>%d</div>"
-                 "<div class='lane' style='width:calc(%d * var(--px))'>" % (channel, span))
+        label = labels.get(channel)
+        out_func("<div class='row'><div class='badge'%s>%s</div>"
+                 "<div class='lane' style='width:calc(%d * var(--px))'>" % (
+                     " title='channel id %d'" % channel if label else '',
+                     esc(label) if label else channel, span))
         for start, length, show_id, description_id, show_group, slot_flags in sorted(
                 channels[channel]):
             named = titles.get(show_id)
@@ -1590,6 +1598,18 @@ def _guide_grid(out_func, slots, titles, descriptions, offset):
     out_func("<script>var DESC=%s</script>" % json.dumps(
         {str(k): descriptions[k][0] for k in sorted(wanted)}, separators=(',', ':')))
 
+    _table(out_func, 'adrift', 'Listings not drawn',
+           'The ones the key above counts, as the broadcast sent them.',
+           (('Start (GMT)', ''), ('Channel', 'num'), ('Minutes', 'num'), ('Show number', 'num'),
+            ('Title', 'wrap'), ('Description number', 'num'), ('Show group', 'num'),
+            ('Flag byte', '')),
+           [(start.strftime('%Y-%m-%d %H:%M'), channel, length, show_id,
+             esc(titles[show_id][1]) if show_id in titles else '', _blank(description_id),
+             _blank(show_group), '0x%02x' % slot_flags)
+            for start, channel, length, show_id, description_id, show_group, slot_flags in sorted(
+                (slot for slot in slots if abs(shown(slot[0]) - middle) > reach),
+                key=lambda slot: slot[:4])])
+
 def _local(when, offset):
     """ Station wall clock for a GMT instant, or None if the clock was never sent """
     return None if offset is None else when + datetime.timedelta(hours=offset)
@@ -1602,10 +1622,15 @@ def _table(out_func, table_id, heading, note, columns, rows):
     """
     if not rows:
         return
+    # a column no row fills is left out rather than drawn empty: theme names, say, which no
+    # capture has carried
+    kept = [i for i in range(len(columns)) if any(row[i] != '' for row in rows)]
+    columns = [columns[i] for i in kept]
+    rows = [[row[i] for i in kept] for row in rows]
     out_func("<h2>%s</h2><p>%s rows. %s</p>" % (heading, format(len(rows), ',d'), note))
     rules = ''.join('#%s td:nth-child(%d){%s}'
-                    % (table_id, i + 1, 'text-align:right' if css == 'num'
-                       else 'white-space:normal;max-width:48em')
+                    % (table_id, i + 1, {'num': 'text-align:right', 'pre': 'white-space:pre'}
+                       .get(css, 'white-space:normal;max-width:48em'))
                     for i, (_, css) in enumerate(columns) if css)
     out_func("<style>%s</style><table id='%s'><thead><tr>" % (rules, table_id)
              + "".join("<th>%s<b></b>" % name for name, _ in columns)
@@ -1615,6 +1640,46 @@ def _table(out_func, table_id, heading, note, columns, rows):
     for row in rows:
         out_func("<tr>" + "".join("<td>%s" % value for value in row))
     out_func("</tbody></table>")
+
+def _blank(value):
+    """ An optional field's cell: empty when the command did not carry it """
+    return '' if value is None else value
+
+def _stamp(when):
+    return when.strftime('%Y-%m-%d %H:%M:%S') if when is not None else ''
+
+def _title_attributes(flags):
+    """ A Show Title's attribute bits, named the way the loader's database columns are """
+    attributes = show_attributes(flags)
+    return ' '.join(name for key, name in (('closed_captioned', 'CC'), ('stereo', 'stereo'),
+                                           ('black_and_white', 'B/W')) if attributes[key])
+
+# The loader-only types, a table each: its columns, and a row from what the decoder kept of
+# one command. Bytes it does not name are shown as hex.
+LOADER_TABLES = {
+    COMMAND_REGION_NAME: ((('Region', 'num'), ('Name', '')),
+                          lambda d: (d.region, html.escape(d.name) if d.name is not None
+                                     else '(undecodable)')),
+    COMMAND_CYCLE_START: ((('Bytes', ''),), lambda d: (d.hex(' '),)),
+    COMMAND_POSTAL_CODE: ((('Postal code', ''), ('Broadcast regions', 'wrap'),
+                           ('Cable regions', 'wrap'), ('Trailer', '')),
+                          lambda d: (html.escape(d.code), ' '.join(map(str, d.broadcast)),
+                                     ' '.join(map(str, d.cable)), d.trailer.hex(' '))),
+    COMMAND_ADDRESSED: ((('Version', 'num'), ('Day (GMT)', ''), ('Regions', 'wrap'),
+                         ('Entries', 'wrap')),
+                        lambda d: (d.version, d.day.strftime('%Y-%m-%d %H:%M'),
+                                   ' '.join(map(str, d.regions)),
+                                   ' '.join('%d:%d' % entry for entry in d.entries))),
+    COMMAND_KEYED_RECORD: ((('Id', 'num'), ('Flags', ''), ('First part', 'wrap'),
+                            ('Second part', 'wrap'), ('Third part', 'wrap')),
+                           lambda d: (d.identifier, bytes(d.flags).hex(' '))
+                           + tuple(part.hex(' ') for part in d.parts)),
+    COMMAND_TIMED_RECORD: ((('Id', 'num'), ('Value', 'num'), ('Field', 'num'),
+                            ('Byte 11', 'num')), tuple),
+    COMMAND_SIZED_PAYLOAD: ((('Id', 'num'), ('Payload', 'wrap')),
+                            lambda d: (d.identifier, d.payload.hex(' '))),
+    COMMAND_GATE: ((('Flag', ''),), lambda d: ('on' if d else 'off',)),
+}
 
 def _iso(when):
     """ The wire carries GMT, so every instant in the export is written as GMT """
@@ -1734,6 +1799,9 @@ def write_starsight_json(output_filename, guide):
                                   for starts, ends in daylight],
         'sequenceNumbers': guide['sequence'],
     }
+    # sent whole: fifteen instances over two stations name only a few of its fields
+    if guide['station']:
+        document['stationNodeStatus'] = [raw.hex() for _, raw in guide['station']]
 
     out_func, f = get_output_function("starsight.json", output_filename, end="")
     out_func(json.dumps(document, separators=(',', ':')))
@@ -1767,6 +1835,7 @@ def read_starsight_json(document):
         if 'callSign' in entry or 'channelNumber' in entry:
             guide['channel_data'][entry['id']] = ChannelData(
                 entry['id'], entry.get('channelNumber', 0), entry.get('callSign', ''),
+                entry.get('network', ''), entry.get('label', ''),
                 entry.get('showsCallSign', False))
 
     for entry in document.get('themes', ()):
@@ -1777,7 +1846,8 @@ def read_starsight_json(document):
         rating = None
         if 'rating' in entry:
             named = set(entry.get('advisories', ()))
-            advisories = sum(mask for mask, name in ADVISORY_NAMES if name in named)
+            advisories = sum(mask for mask, name in ADVISORY_NAMES + ADVISORY_UNKNOWN
+                             if name in named)
             # documents written before the stars were identified call them ratingSystem
             rating = ShowRating(entry.get('stars', entry.get('ratingSystem')), entry['rating'],
                                 advisories, entry.get('year'))
@@ -1797,6 +1867,8 @@ def read_starsight_json(document):
         guide['daylight'].append((_from_iso(entry['starts']), _from_iso(entry['ends'])))
 
     guide['sequence'] = list(document.get('sequenceNumbers', ()))
+    guide['station'] = [(decode_station_node(raw), raw)
+                        for raw in map(bytes.fromhex, document.get('stationNodeStatus', ()))]
 
     return guide
 
@@ -1911,6 +1983,8 @@ def merge_guides(guides, expire=False):
         merged['sequence'] += guide['sequence']
         merged['channel_data'].update(guide['channel_data'])
         merged['theme_names'].update(guide['theme_names'])
+        merged['station'] += [entry for entry in guide['station']
+                              if entry not in merged['station']]
 
     merged['blocks'] = blocks
     slots = {slot for block in blocks.values() for slot in block}
@@ -1960,27 +2034,71 @@ def write_starsight_html(output_filename, guide, counts=None):
              % STARSIGHT_HTML_STYLE)
     out_func("<h1>StarSight program guide</h1>")
 
-    _guide_grid(out_func, slots, titles, descriptions, offset)
+    # a channel as a viewer knew it, where a Region or Channel Data command has said
+    labels = {channel: str(number) for channel, number in guide['lineup'].items()}
+    labels.update((channel, ('%d %s' % (data.number, data.label or data.call_sign)).strip())
+                  for channel, data in guide['channel_data'].items())
+    _guide_grid(out_func, slots, titles, descriptions, offset, labels)
 
-    _table(out_func, 'showtitle', 'Show Title', 'One per program. The theme number groups programs by genre.',
-           (('Show number', 'num'), ('Theme number', 'num'), ('Title', 'wrap')),
-           [(show_id, theme, esc(title))
-            for show_id, (theme, title, _) in sorted(titles.items())])
+    theme_names = guide['theme_names']
+    _table(out_func, 'showtitle', 'Show Title',
+           'One per program. The theme number groups programs by genre. The attributes are '
+           "the closed captioned (CC), stereo and black and white (B/W) bits of the title's "
+           'flag byte; compressed, which the JSON export does not keep, marks one sent '
+           'Huffman coded.',
+           (('Show number', 'num'), ('Theme number', 'num'), ('Theme', ''),
+            ('Attributes', ''), ('Compressed', ''), ('Title', 'wrap')),
+           [(show_id, theme, esc(theme_names.get(theme, '')), _title_attributes(flags),
+             'yes' if flags & COMPRESSED_FLAG else '', esc(title))
+            for show_id, (theme, title, flags) in sorted(titles.items())])
 
     _table(out_func, 'showdesc', 'Show Description',
            'Numbered separately from the show numbers above; a Show List slot points at '
            'one through the optional field its flags select. Year, stars, rating and '
            'advisories come from the extended form of the command and are blank on the '
-           'plain one.',
+           'plain one. The TV rating is the one the text opens with, and a description '
+           "ending '(R).' is a rerun.",
            (('Description number', 'num'), ('Year', 'num'), ('Stars', ''),
-            ('Rating', ''), ('Advisories', 'wrap'), ('Description', 'wrap')),
+            ('Rating', ''), ('Rating code', 'num'), ('TV rating', ''),
+            ('Advisories', 'wrap'), ('Rerun', ''), ('Description', 'wrap')),
            [(description_id,
              rating.year if rating and rating.year else '',
              '*' * rating.stars if rating else '',
              (rating_name(rating) or rating.code) if rating else '',
+             rating.code if rating else '',
+             tv_rating(text) or '',
              esc(', '.join(description_advisories(rating.advisories))) if rating else '',
+             'yes' if text.endswith(' (R).') else '',
              esc(text))
             for description_id, (text, rating) in sorted(descriptions.items())])
+
+    _table(out_func, 'themecategory', 'Theme Category', 'The genres the themes sit under.',
+           (('Category number', 'num'), ('Name', '')),
+           [(category, esc(name))
+            for category, name in sorted(guide['theme_categories'].items())])
+
+    _table(out_func, 'theme', 'Theme Sub-Category',
+           "What names a Show Title's theme number, after the category it sits under.",
+           (('Theme number', 'num'), ('Name', '')),
+           [(theme, esc(name)) for theme, name in sorted(theme_names.items())])
+
+    _table(out_func, 'channeldata', 'Channel Data',
+           'What names a channel id: the number it sits on, its call letters and network, and '
+           'the four characters picked for a display too narrow for the rest.',
+           (('Channel id', 'num'), ('Channel number', 'num'), ('Call sign', ''),
+            ('Network', ''), ('Label', ''), ('Shows call sign', '')),
+           [(data.channel, data.number, esc(data.call_sign), esc(data.network),
+             esc(data.label), 'yes' if data.shows_call_sign else '')
+            for _, data in sorted(guide['channel_data'].items())])
+
+    _table(out_func, 'region', 'Region',
+           'The lineup: the number each channel id sits on for a receiver in the region, '
+           'from the time given or at once.',
+           (('Region', 'num'), ('Effective (GMT)', ''), ('At once', ''),
+            ('Channel id', 'num'), ('Channel number', 'num')),
+           [(region.region, region.effective.strftime('%Y-%m-%d %H:%M'),
+             'yes' if region.immediate else '', channel, number)
+            for region in guide['regions'] for channel, number in region.channels or [('', '')]])
 
     _table(out_func, 'time', 'Time', 'The station clock, sent about twice a minute.',
            (('Time (GMT)', ''), ('Standard offset', 'num'), ('Daylight saving', '')),
@@ -1992,6 +2110,40 @@ def write_starsight_html(output_filename, guide, counts=None):
            (('Daylight saving starts (GMT)', ''), ('Daylight saving ends (GMT)', '')),
            [(starts.strftime('%Y-%m-%d %H:%M'), ends.strftime('%Y-%m-%d %H:%M'))
             for starts, ends in daylight])
+
+    _table(out_func, 'station', 'Station Node Status',
+           "The station's own health, every five or ten minutes. Its times are Unix seconds, "
+           'which nothing else in the format uses, and the three counts are read only where '
+           'they add up.',
+           (('Version', 'num'), ('Bytes', 'num'), ('Built (GMT)', ''), ('Assembled (GMT)', ''),
+            ('Clock (GMT)', ''), ('Done', 'num'), ('Remaining', 'num'), ('Total', 'num')),
+           [(node.version, len(raw), _stamp(node.built), _stamp(node.assembled),
+             _stamp(node.clock), _blank(node.done), _blank(node.remaining), _blank(node.total))
+            if node else ('', len(raw), '', '', '', '', '', '')
+            for node, raw in guide['station']])
+
+    _table(out_func, 'stationbytes', 'Station Node Status bytes',
+           'Each block above as it was sent, sixteen bytes a row, read as ASCII and as '
+           'CEA-608 characters.',
+           (('Block', 'num'), ('Offset', ''), ('Bytes', 'pre'), ('ASCII', 'pre'),
+            ('CEA-608', 'pre')),
+           [(number, '0x%04x' % at, raw[at:at + 16].hex(' '),
+             esc(''.join(chr(b) if 0x20 <= b < 0x7F else '.' for b in raw[at:at + 16])),
+             esc(''.join(CC_TABLE.get(b & 0x7F) or '.' for b in raw[at:at + 16])))
+            for number, (_, raw) in enumerate(guide['station'], 1)
+            for at in range(0, len(raw), 16)])
+
+    _table(out_func, 'reset', 'Subscriber Reset', 'What each reset asked a receiver to discard.',
+           (('Reset', 'num'), ('Action', '')),
+           [(number, ', '.join(actions) or 'nothing')
+            for number, actions in enumerate(guide['resets'], 1)])
+
+    for command_type, decoded in sorted(guide['loader_commands'].items()):
+        columns, row = LOADER_TABLES[command_type]
+        _table(out_func, 'type%d' % command_type,
+               COMMAND_NAMES.get(command_type, 'Type %d' % command_type),
+               'Every field as SSLOAD.DLL reads it, which is where this layout comes from.',
+               columns, [row(value) for value in decoded])
 
     transmitted, received, lost, breaks = packet_loss(guide['sequence'])
     if transmitted:
@@ -2007,11 +2159,39 @@ def write_starsight_html(output_filename, guide, counts=None):
                (('Last packet before the gap', 'num'), ('Packets missing', 'num')),
                sequence_gaps(guide['sequence']))
 
+    streams = defaultdict(list)
+    for when, stream_id in guide['packets']:
+        streams[stream_id].append(when)
+    _table(out_func, 'packets', 'Packets',
+           'The packets that passed both checksums, by the VBI stream id in their headers, '
+           'with the first and last of their header times.',
+           (('Stream id', 'num'), ('Packets', 'num'), ('First (GMT)', ''), ('Last (GMT)', '')),
+           [(stream_id, len(times), min(times).strftime('%Y-%m-%d %H:%M'),
+             max(times).strftime('%Y-%m-%d %H:%M'))
+            for stream_id, times in sorted(streams.items())])
+
+    # the loader ignores its stubs, and the only two of them a capture has carried -
+    # Sequence Number and Station Node Status - are the only two read here
+    counted = sorted(set(guide['unnamed']) | {
+        command_type for command_type in counts
+        if COMMAND_TABLE.get(command_type, (0, 0, 'none'))[2] == 'stub'
+        and command_type not in (COMMAND_SEQUENCE_NUMBER, COMMAND_STATION_NODE_STATUS)})
     _table(out_func, 'commands', 'Commands',
-           'Every command seen in the capture. All of these are decoded.',
+           'Every command seen in the capture. All of these are decoded%s.' % (
+               ' except type%s %s, which %s only counted' % (
+                   's' if len(counted) > 1 else '', ', '.join(map(str, counted)),
+                   'are' if len(counted) > 1 else 'is') if counted else ''),
            (('Type', 'num'), ('Command', ''), ('Count', 'num')),
            [(command_type, COMMAND_NAMES.get(command_type, 'unknown'), count)
             for command_type, count in sorted(counts.items())])
+
+    _table(out_func, 'undecodable', 'Not decoded',
+           'Commands whose text did not decompress, and so are missing from the tables above.',
+           (('Command', ''), ('Count', 'num')),
+           [(COMMAND_NAMES[command_type], guide['undecodable'][key])
+            for command_type, key in ((COMMAND_SHOW_TITLE, 'titles'),
+                                      (COMMAND_SHOW_DESCRIPTION, 'descriptions'))
+            if guide['undecodable'][key]])
 
     out_func("</main><script>%s</script></body></html>" % STARSIGHT_HTML_SCRIPT)
 
@@ -2092,7 +2272,8 @@ def decode_starsight(rx, output_filename, options):
                         # a Show List can carry no slots at all, and a channel that
                         # never reaches the log should not reach the count either
                         channels.add(_u16(command, 4) & CHANNEL_ID_MASK)
-                except IndexError:
+                except (IndexError, OverflowError):
+                    # a short command, or a Show List start a bit error put past 9999
                     continue
 
                 for line in described:

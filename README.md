@@ -67,6 +67,7 @@ Output Options:
                           text      - Plain text output (TEXT mode only)
                           xds       - eXtended Data Services (XDS) data
                           starsight - StarSight program guide data
+                          silentradio - Silent Radio LED sign feed
                           raw       - Raw caption data
                           debug     - Debug output
 
@@ -111,8 +112,13 @@ so the default `--frame_rate` is already right and the timecodes come out true.
 Widen the line range to pick up everything else carried in the same capture:
 
 ```
-... | cc_decoder.py --start_line 0 --end_line 15 --ccformat srt,xds,starsight - -o out
+... | cc_decoder.py --start_line 0 --end_line 15 --ccformat srt,xds,starsight,silentradio - -o out
 ```
+
+`silentradio` writes `out.silentradio.html` with, beside it, an SVG that plays each message
+and channel on its own (SMIL), with the keyed swings of the messages that have one, and a live
+player page for each;
+`docs/silentradio.md` has the rest.
 
 
 Performance
@@ -127,3 +133,6 @@ Building Standalone.exe with Pyinstaller
 Pyinstaller creates nice standalone .exe files for windows and beyond.
 
 pyinstaller --clean --onefile --console --exclude-module scipy --upx-dir="c:\Program Files\UPX" cc_decoder.py
+
+The Silent Radio players inline the JS in `lib/silentradio/`, so add it too:
+`--add-data "lib/silentradio/*.js;lib/silentradio"` (`:` in place of `;` outside Windows).

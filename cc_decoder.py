@@ -93,6 +93,7 @@ from lib.cc_decode import (
     PREAMBLE_RUN_IN_COUNT
 )
 from lib.starsight import decode_starsight
+from lib.silentradio import decode_silent_radio, decode_silent_radio_row, LINE_SILENT_RADIO
 
 import numpy as np
 
@@ -105,7 +106,8 @@ class ClosedCaptionFileDecoder(object):
                 'raw': decode_captions_raw,
                 'debug': decode_captions_debug,
                 'xds': decode_xds_packets,
-                'starsight': decode_starsight}
+                'starsight': decode_starsight,
+                'silentradio': decode_silent_radio}
 
     # Which service each output format is made of. A line carries one service and is never
     # shared, so a format is only ever sent the lines that are its own.
@@ -116,7 +118,8 @@ class ClosedCaptionFileDecoder(object):
                 'raw': lib.cc_decode.LINE_CAPTIONS,
                 'debug': lib.cc_decode.LINE_CAPTIONS,
                 'xds': lib.cc_decode.LINE_CAPTIONS,
-                'starsight': lib.cc_decode.LINE_STARSIGHT}
+                'starsight': lib.cc_decode.LINE_STARSIGHT,
+                'silentradio': LINE_SILENT_RADIO}
 
     def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, preamble_run_in_count, debug_plot):
         self.ffmpeg_path = ffmpeg_path
@@ -197,7 +200,7 @@ class ClosedCaptionFileDecoder(object):
 
     @staticmethod
     def line_decoder_worker(rx, tx, row, image_width, min_correlation,
-                            preamble_run_in_count, debug_plot):
+                            preamble_run_in_count, debug_plot, silent_radio):
         setproctitle(multiprocessing.current_process().name)
 
         lib.cc_decode.PRE_COMPUTED_PREAMBLE_TEMPLATES = \
@@ -205,6 +208,8 @@ class ClosedCaptionFileDecoder(object):
 
         service = lib.cc_decode.LineService()
         image = np.empty((1, image_width), dtype=np.uint8)
+        # the lines this row has carried: CEA-608's, Silent Radio's
+        carried = [0, 0]
 
         try:
             while True:
@@ -216,6 +221,19 @@ class ClosedCaptionFileDecoder(object):
                 service.frame()
 
                 sliced = lib.cc_decode.decode_row(image, 0, min_correlation, debug_plot)
+                cea608 = sliced is not None and sliced[1] is not None
+
+                # a CEA-608 line read at half its bit width can pass for Silent Radio's
+                # pre-data code, and a Silent Radio line whose first byte carries on its
+                # run-in for CEA-608: a line both slice goes to the one the row carries more of
+                if silent_radio and (not cea608 or carried[1] > carried[0]):
+                    found = decode_silent_radio_row(image[0])
+                    if found is not None:
+                        carried[1] += 1
+                        tx.send(((row, *found[:2], False, found[2]), LINE_SILENT_RADIO))
+                        continue
+                carried[0] += cea608
+
                 if sliced is not None:
                     _, byte1, byte2, noisy, confidence = sliced
                     if byte1 is not None:
@@ -321,7 +339,8 @@ class ClosedCaptionFileDecoder(object):
                     None, ClosedCaptionFileDecoder.line_decoder_worker,
                     name=f"cc_decoder_line_{row}",
                     args=(pixels_rx, result_tx, row, self.image_width,
-                          self.min_correlation, self.preamble_run_in_count, self.debug_plot)
+                          self.min_correlation, self.preamble_run_in_count, self.debug_plot,
+                          'silentradio' in formats)
                 )
                 line.start()
                 line_processes.append(line)
@@ -378,7 +397,9 @@ class ClosedCaptionFileDecoder(object):
 
                         # send data to status process
                         if not self.quiet:
-                            status_tx.send((self.frame_count, rows))
+                            status_tx.send((self.frame_count,
+                                            [row for row, service in zip(rows, services)
+                                             if service != LINE_SILENT_RADIO]))
 
                         self.frame_count += 1
                     except (InterruptedError, KeyboardInterrupt, EOFError):
@@ -455,6 +476,7 @@ def main():
                                     '  text      - Plain text output (TEXT mode only)\n'
                                     '  xds       - eXtended Data Services (XDS) data\n'
                                     '  starsight - StarSight program guide data\n'
+                                    '  silentradio - Silent Radio LED sign feed\n'
                                     '  raw       - Raw caption data\n'
                                     '  debug     - Debug output'
                                 )

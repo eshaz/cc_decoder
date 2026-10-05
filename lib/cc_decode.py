@@ -1191,6 +1191,35 @@ def get_output_function(extension, output_filename, end="\n"):
 
     return out_func, f
 
+# CEA-608-E D.4
+class HeldOutput:
+    def __init__(self, extension, output_filename, end):
+        self._file = (extension, output_filename, end)
+        self._held = []
+        self._out = None
+        self._f = None
+
+    def __call__(self, out):
+        if self._out is None:
+            self._held.append(out)
+        else:
+            self._out(out)
+
+    def show(self):
+        if self._out is None:
+            self._out, self._f = get_output_function(*self._file)
+            for out in self._held:
+                self._out(out)
+            self._held = []
+
+    def close(self):
+        if self._f is not None:
+            self._f.close()
+
+def writable(data):
+    return any(not control and decode_byte_pair(False, b1 if b1_parity else 0, b2 if b2_parity else 0, False).strip()
+               for _, _, control, b1, b1_parity, b2, b2_parity in data)
+
 def decode_captions_raw(rx, output_filename, options):
     """ Raw output, show the frame caption codes and frame numbers
          rx                 - input connection for decoded cc data
@@ -1299,10 +1328,10 @@ class CaptionTrack:
         self.f_text = None
 
     def open(self):
-        self.out, self.f = get_output_function(self._cc_track + "." + self._extension, self._output_filename, self.output_end)
+        self.out = self.f = HeldOutput(self._cc_track + "." + self._extension, self._output_filename, self.output_end)
 
     def open_text(self):
-        self.out_text, self.f_text = get_output_function(CC_CHANNEL_TO_TEXT_CHANNEL[self._cc_track] + "." + self._extension, self._output_filename, self.output_end)
+        self.out_text = self.f_text = HeldOutput(CC_CHANNEL_TO_TEXT_CHANNEL[self._cc_track] + "." + self._extension, self._output_filename, self.output_end)
 
     def close(self):
         if self.f is not None:
@@ -1440,10 +1469,14 @@ class CaptionTrack:
     def write_text(self, frames):
         if self.f_text is None:
             self.open_text()
+        if writable(self._text_buffer):
+            self.f_text.show()
     
     def write_caption(self, data, frames):
         if self.f is None:
             self.open()
+        if writable(data):
+            self.f.show()
 
 class SCCCaptionTrack(CaptionTrack):
     def __init__(self, cc_track, output_filename, options):
@@ -1506,12 +1539,12 @@ class SCCCaptionTrack(CaptionTrack):
         _, code, _, _, _, _, _ = data
 
         if 'Carriage Return' in code:
-            self._write(self.out_text, self._text_buffer, frames)
+            self.write_text(frames)
             self.clear_text()
 
     def close(self):
         if len(self._text_buffer) > 0:
-            self._write(self.out_text, self._text_buffer, self.text_frame)
+            self.write_text(self.text_frame)
         super().close()
 
     def write_text(self, frames):
