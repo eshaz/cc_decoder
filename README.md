@@ -88,6 +88,20 @@ Decoding Options:
                           25    (PAL)
 ```
 
+Gemstar EPG data (Guide Plus+ / TV Guide On Screen)
+===================================================
+`gemstar_decoder.py` decodes the Gemstar program guide data carried in the VBI of
+host stations (1990s-2000s) from raw VBI captures: ld-decode / vhs-decode `.tbc` /
+`.y16` / `.flac` VBI exports and 1440-sample capture-card `.vbi` dumps. It finds the
+Gemstar lines, slices the 2X and 1X signals, and writes the packet layers and clock.
+Given your own copy of Gemstar's `FREQCCD_.EXE`, it also decrypts and decodes program
+listings, channel lineups, genres, and ad screens (`pip install unicorn pillow`).
+
+* `gemstar_decoder.py capture.vbi -o out/ --freqccd /path/to/FREQCCD_.EXE`
+
+See [docs/gemstar.md](docs/gemstar.md) for the formats, options and requirements.
+
+
 Performance
 ===========
 About 10-20x realtime on my i7 machine. Primarily limited by FFMpeg

@@ -1,0 +1,4 @@
+# Extra packages for gemstar_decoder.py and tools/nova2 (numpy is in requirements.txt)
+unicorn      # runs Gemstar's own routines from FREQCCD_.EXE / Nova2 (decryption, listings)
+pillow       # renders graphics objects and logos
+pefile       # tools/nova2 only
