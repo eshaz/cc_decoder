@@ -1,730 +1,579 @@
-StarSight program guide
-=======================
+StarSight
+=========
 
-**The byte-level reference is [`starsight-protocol.html`](starsight-protocol.html)** -
-every command layout, both checksums, every flag bit, the compression table and the schema
-the data lands in, each row marked with whether a capture measured it, the loader supplied
-it, or a patent described it. This document is the account of how those facts were arrived
-at, and what is still missing.
+StarSight was an interactive television program guide of the 1990s. Its data - schedules,
+program titles and descriptions, channel lineups, news pages - was broadcast continuously
+on a line of the NTSC vertical blanking interval, and a StarSight receiver built its guide
+from what it heard. This document describes that data stream, the StarSight Data
+Transmission Network protocol, and how `cc_decoder` decodes it.
 
-What `cc_decoder` decodes on a StarSight VBI line, and what is left. Started as
-[issue #3](https://github.com/eshaz/cc_decoder/issues/3), a request for Silent Radio
-support - see "How Silent Radio fits in" for why that led here.
+- [`starsight-protocol.html`](starsight-protocol.html) (and `.json`) is the byte-level
+  reference: every command type, layout, flag bit and the compression table, generated from
+  `lib/starsight.py` by `docs/starsight_tables.py`.
+- [`starsight.schema.json`](starsight.schema.json) describes the decoder's JSON export.
+- [`research/starsight-sources.md`](research/starsight-sources.md) gives the sources and
+  the evidence behind everything here.
 
-The protocol
-------------
+Contents
 
-**The StarSight Data Transmission Network protocol** is what this decodes.
-[US6216265B1](https://patents.google.com/patent/US6216265B1/en) (StarSight Telecast)
-reproduces it in full - packet header, command table, and the byte layout of each
-command - and `lib/starsight.py` follows that document.
+1. [The signal](#the-signal)
+2. [Packets](#packets)
+3. [Commands](#commands)
+4. [Text](#text)
+5. [The clock](#the-clock)
+6. [The schedule](#the-schedule)
+7. [Themes](#themes)
+8. [Channels and lineups](#channels-and-lineups)
+9. [The news service](#the-news-service)
+10. [The station](#the-station)
+11. [Receiver control](#receiver-control)
+12. [How a receiver builds the guide](#how-a-receiver-builds-the-guide)
+13. [Decoding with cc_decoder](#decoding-with-cc_decoder)
+14. [Open questions](#open-questions)
 
-**The shipped implementation has now been read.** `SSLOAD.DLL` on the Windows 98 SE CD -
-the same binary the compression table came out of, md5 `6a85a39dd536cfe582d19090fd48e68e` -
-is Microsoft's StarSight Guide Data Loader, and it contains the original command parser
-and the database it loads into. It settles every field below that had been inferred. See
-"What SSLOAD.DLL settles".
 
-The waveform underneath is the CEA-608 one - 32x line rate bit clock, clock run in,
-2+1 start bits, 16 data bits per field, about 960 bit/s - moved to another VBI line.
-Decoder silicon calls that bearer Gemstar 1x (TI TVP514x and Analog Devices ADV718x
-both list "Gemstar 1x, NTSC, 2 bytes") and
-[US5543852A](https://patents.google.com/patent/US5543852A/en) defines its 1X and 2X
-rates; Gemstar acquired StarSight in 1997, so its bearer carrying StarSight's data
-format is what you would expect. The protocol is what matters here, and it is bearer
-independent.
+The signal
+----------
 
-**It is not NABTS.** [RFC 2728](https://www.rfc-editor.org/rfc/rfc2728) describes the
-same StarSight guide going over PBS National Datacast at the 5.727 Mbit/s teletext
-rate, 9600 baud per VBI line per field - the same guide, ten times faster. Measured
-across 4,000 fields of the sample, the 5.73 MHz band sits four to six orders of
-magnitude below the 0.5 MHz band on every one of the 16 captured lines, so there is no
-NABTS - and so no WaveTop - in these captures.
+StarSight uses the line 21 caption waveform of CEA-608 on another line of the vertical
+blanking interval: a clock run-in, start bits and sixteen data bits a field at 32 times the
+line rate. Each field carries two bytes, about 960 bits a second, and unlike captions all
+eight bits of each byte are data - there is no parity bit.
 
-Packet layout
--------------
+The two fields of the line carry **one byte stream**: field 1's two bytes, then field 2's,
+and so on. Neither field alone holds a whole packet.
 
-The layout is in [the reference](starsight-protocol.html#packet): a sync, a size, a
-timestamp, a stream id, a header checksum, the commands, and a body checksum.
 
-Verified on all three captures: the size field chains to the next sync, the timestamps
-are monotonic, and the commands **tile the message exactly** once the four byte trailer
-is reserved - 2,437 packets tile against 4 syncs rejected, 99.7% / 99.7% / 100% by
-capture. The April capture's header timestamps read `1998-04-19 02:48 GMT`, which is
-what the CEA-608 XDS clock on line 21 of the same tape reports to the minute - two
-independent services agreeing on the instant.
+Packets
+-------
 
-**Both checksums are reproduced**, from `SSLOAD.DLL`. One routine computes them, at image
-offset `0xF1F0` and again verbatim at `0xF240`: a table driven reflected CRC-32 over the
-standard IEEE polynomial `0xEDB88320`, table at `0x149F8`, started at `0xFFFFFFFF` and
-returned **without a final inversion**.
+The stream is a sequence of packets. All numbers are big endian except the two checksums.
+
+| Offset | Bytes | Field |
+|---|---|---|
+| 0 | 1 | sync, `0x2C` |
+| 1 | 2 | size of the whole packet, header and trailer included; at most `0x7F8` |
+| 3 | 4 | the minute the packet was sent (see [Times](#times)) |
+| 7 | 2 | stream id, which identifies the feed |
+| 9 | 2 | header check, little endian |
+| 11 | size - 15 | commands, which fill the space exactly |
+| size - 4 | 4 | body check, little endian |
+
+Both checks use one CRC: the reflected CRC-32 with polynomial `0xEDB88320`, started at
+`0xFFFFFFFF` and returned **without a final inversion** - zlib's `crc32` with its result
+inverted.
 
 ```
-header   crc32(bytes 0..8) & 0xFFFF  ==  bytes 9-10 read LITTLE endian
-body     crc32(the whole packet, its own trailer included)  ==  0
+header check   crc(bytes 0-8) & 0xFFFF  ==  bytes 9-10, least significant byte first
+body check     crc(the whole packet, trailer included)  ==  0
 ```
 
-Sweeping had failed here for two reasons, and both are in that pair of lines. The header
-checksum is the one number in the format stored little endian, so every big-endian reading
-of bytes 9-10 missed it - across 243 packets the little endian reading matches all of them
-and the big endian reading none. And the body checksum has no final inversion, which is
-what makes running it over the packet *including* its own trailer come out zero; a sweep
-looking for the stored value to equal the computed one over the payload would never land.
+The body check holds because the trailer is the CRC of everything before it, stored least
+significant byte first. The header check is what marks a `0x2C` as a real sync: once it
+passes, the size can be trusted.
 
-They are used as the loader uses them. The header's own checksum settles whether a `0x2C`
-is a sync at all, which is a far better test than the size merely looking plausible, and
-once it passes the size is trustworthy, so a packet whose body fails is stepped over whole
-instead of rescanned a byte at a time. Exact command tiling is kept, demoted to a
-cross-check: a packet that checksums correctly and still does not tile would be structure
-this decoder does not know, and that count is **zero** across every capture.
+Every packet carries a [Sequence Number](#the-clock) command, so a receiver can tell when
+it has missed one.
+
+### Times
+
+Unless a field says otherwise, a time is a 32 bit count of minutes since **1 January 1992,
+00:00 GMT**. Times are in GMT; a station's [Time](#the-clock) command gives its offset.
+Station Node Status is the exception, counting Unix seconds.
+
 
 Commands
 --------
 
-Byte layouts for all nineteen command types the loader implements are in
-[the reference](starsight-protocol.html#command-layouts); what follows is what the captures
-show about the five that carry guide data, and how the rest were arrived at.
+Every command starts the same way.
 
-Byte 0 is `enc_flg | key_id | type`; the type is the low 6 bits, and `SSLOAD.DLL`
-dispatches on exactly `byte0 & 0x3F`. Then a length that includes those bytes and is one
-or two bytes wide depending on the type - the loader carries a 64 entry descriptor table
-for that, one entry per type, so the widths are not guesswork. Seen in the captures:
-
-| type | command | KET 18 Apr 98 | KET 31 Oct 98 | KET 7 Nov 98 | KCET 3 May 94 |
-|---|---|---|---|---|---|
-| 6 | Show Title | 3,640 | 3,034 | 4,487 | - |
-| 20 | Sequence Number | 377 | 1,027 | 1,033 | 78 |
-| 5 | Show List | - | 941 | 757 | 82 |
-| 8 | Show Description | 233 | - | - | - |
-| 1 | Time | 12 | 29 | 30 | - |
-| 2 | Daylight Saving Change | 12 | 29 | 30 | - |
-
-The fourth capture is from a different station and four years earlier - **KCET, Los
-Angeles, 3 May 1994**, a `vhs-decode` TBC rather than the KET tapes - and it parses with
-the same code: 78 packets, header timestamps `1994-05-03 17:25 .. 17:30 GMT` matching its
-own filename. The protocol was stable across at least those four years and two markets.
-
-**No capture contains a Channel Data command (type 4).** Only types 1, 2, 5, 6, 8 and 20
-appear anywhere across all four. Type 4 is what carries station call letters as plain
-ASCII, on a carousel slow enough that no half hour window caught one, which is why Show
-List channels stay bare 15 bit ids here rather than resolving to call signs. A longer
-capture would fix that and nothing else needs to change to read it.
-
-**Show Title** - `cmp_flg` in bit 7 of byte 2 with CC, stereo and B&W in bits 6-4, a
-**16 bit** show id in bytes 3-4, a 16 bit theme id in bytes 5-6, then the title, running
-to the end of the command. All four flag bits are confirmed: the loader's type 6 handler
-tests exactly `0x80`, `0x40`, `0x20`, `0x10` of byte 2 and carries the last three through
-to the Access columns `TS Closed Caption`, `TS Stereo` and the broadcast property
-abbreviated `B/W`.
-
-The id is 16 bits and the low nibble of byte 2 is not part of it - the handler reads
-bytes 3-4 and nothing else. The nibble is zero on all 692 titles in the April capture
-anyway, so nothing decoded differently for having assumed otherwise.
-
-The theme id groups programs by genre, which is why IROC, NASCAR 2Day and RPM 2Day share
-one and Grow It!, How 2 and Fix It Up! share another. In the loader's database a theme is
-literally a pair: the `Theme` table is `T Theme ID`, `T Genre ID`, `T SubGenre ID`, so one
-theme id names a genre and a subgenre together.
-
-**Show List** - a version byte, a **15 bit** channel id in bytes 4-5 (the loader masks
-byte 4 with `0x7F`; no capture has used the spare top bit), a 32 bit start time and a slot
-count, then slots of `flags | duration in minutes | show id`, with two more bytes when
-the flags carry a description id and two more again for a show group. Slots carry only
-a duration, so the channel's start time is given once and each duration advances it.
-The slot count must be honored; without it a truncated command keeps accumulating and
-walks the clock into the far future.
-
-A slot is four bytes, six with a description id and two more again with a show group -
-which is exactly what the loader's slot walker computes, confirming that bit 7 and bit 5
-of the slot flags are the two optional field selectors. **Bit 6 is pay per view**: the
-walker copies it into bit 7 of its own slot record and the database writer hands that bit
-to `CTimeSlot` as `TS Pay Per View`. The captures agree without being asked to - 581 of
-October's 23,836 slots set it, and they sit on 11 channels out of 201, covering 89% to
-100% of each of those channels' listings, which is the shape of a pay-per-view channel and
-not of a bit error. The show id inside a slot is
-**16 bits**, bytes 2-3; the loader takes no nibble from the flags. Seven slots out of
-43,430 across the October and November captures had had a non-zero nibble read into their
-id, putting them above 65,535 where no title could ever match. Bits 1-4 and 6 of the slot
-flags are the only ones a VBI bit error can corrupt without changing the slot's length and
-so failing the tiling check, which is what those seven look like.
-
-**Show Description** - laid out like Show Title, with a 16 bit id in bytes 3-4 that is
-**not** a show id: a description is pointed at from a Show List slot through the optional
-field its flags select, so the two are joined through the schedule rather than by sharing
-a key. No single capture here carries both, so the join is described but not demonstrated.
-
-Bit 3 of the flag byte selects an **extended form** that puts three more bytes in front of
-the text: a rating system and rating code in byte 7, five content advisory bits in byte 8,
-and the last two digits of the year in byte 9. The text then starts at byte 10. Byte 7
-splits as a three bit rating system above a four bit rating - anything above 7 the loader
-clamps - and byte 8's bits are `nudity 0x02`, `violence 0x04`, `adult situations 0x08`,
-`adult themes 0x10`, `adult language 0x80`, which is the vocabulary the loader pairs them
-with. Every one of those is now parsed and exported. This is also the one place reading
-the loader changed what `cc_decoder` already produced. 55 of the April
-capture's 233 descriptions use the extended form, and all 55 were being decompressed from
-byte 7, which fed three bytes of rating data into the Huffman decoder before the text:
-
-```
-was:  ennhG, caLento skrting aioaens  II veterans come home. Fredric March, Myrna Loy...
-now:  TVG Three World War II veterans come home. Fredric March, Myrna Loy, Dana Andrews.
-```
-
-The same bit explains an anomaly that had been recorded here as a property of the format.
-Description ids appeared to need 20 bits and to run to 529,489 while a slot could only
-point at 16 bits' worth - but 529,489 is 524,288 + 5,201, and 524,288 is bit 3 shifted
-into an id that never had a high nibble. **Description ids are 16 bits**; across the April
-capture they now run 4 to 6,330, and the contradiction with the two byte slot reference
-goes away. The years are the strongest check available that the rest of the extended
-layout is right, because they are externally verifiable: 1946 against Fredric March and
-Myrna Loy is The Best Years of Our Lives, 1972 against Steve McQueen and Ali MacGraw is
-The Getaway, 1926 to 1998 across 51 descriptions with no value out of range.
-
-**Time** - a 32 bit minute count in bytes 2-5, seconds in byte 7, and byte 6 carrying
-the station's standard zone offset as whole hours in bits 0-3, a sign in bit 4 and a
-daylight saving flag in bit 7. Byte for byte what the loader does. The April capture reads
-`-5 hours, daylight saving`, which is EST plus DST, matching the `D` in XDS's `TM 02:48D`
-on line 21.
-
-**Sequence Number** - a 32 bit counter in bytes 2-5, one command per packet, stepping by
-one. Its gaps are therefore exactly the packets that never arrived, which is the only
-direct measure of loss this format offers - a checksum tells you a packet was damaged,
-only the counter tells you one never came at all. It reconciles
-with what the decoder saw: over the October capture the counter spans **1,043 packets**,
-1,027 were accepted, 3 were rejected at the tiling check and the remaining **13 never
-formed at all** - 1.53% lost. Per day-block the losses are 6, 2, 3, 2 and 3, and that
-third figure is worth keeping: the 5 November block is short exactly three channels and
-lost exactly three packets. The 3 November block is short sixty-two channels and lost six,
-so loss does not explain that one - the recording start does.
-
-Count it from consecutive steps and not from the span: a single flipped bit moves a 32 bit
-value by up to 2^31, and one does exactly that in the 1994 capture, stepping 5,720 to
-1,054,298. Counted properly the four captures lose:
-
-| capture | packets | lost |
-|---|---|---|
-| KET 18 Apr 1998 | 378 | 1 (0.26%) |
-| KET 31 Oct 1998 | 1,043 | 16 (1.53%) |
-| KET 7 Nov 1998 | 1,040 | 7 (0.67%) |
-| KCET 3 May 1994 | 177 | **99 (55.9%)** |
-
-That last row explains a capture that had never been explained, and checksumming it made
-the picture worse still. Of the packets the 1994 tape does deliver, **three pass both
-checksums; forty have a corrupt header and eighty-three a corrupt body**. The 2,231 slots
-this used to report from that tape were read out of packets with bit errors in them - which
-is exactly why 123 of those slots landed in the year 9312.
-
-It is not the crop: sweeping the crop offset across 106, 116, 126, 136 and 146 gives two
-good packets at best and the current 126 is already there. It is a `vhs-decode` TBC off VHS
-rather than one of the clean off-air KET tapes, and what it has to say about StarSight is
-that the protocol and the decoder both work on it - three clean packets parse perfectly -
-and that almost nothing else on the tape survived.
-
-`SSLOAD.DLL` is no help here and does not need to be: its command table sends type 20 to
-the trace function and reads nothing, because the loader has two CRCs and a database to
-accumulate into. This is read off the wire instead.
-
-**Station Node Status** - 733 fixed bytes of the station's own health, sent about every
-ten minutes. It had never been seen in any capture, and the reason was this decoder: the
-maximum packet size here was a made up 600 when the loader's is `0x7F8`, so every packet
-carrying one was thrown away. There are seven across the three 1998 tapes now, and **438 of
-the 733 bytes are identical in all of them** - tapes seven months apart - so most of it is a
-template.
-
-Two fields are pinned down, and both are **Unix seconds**, which nothing else in this
-format uses; everywhere else counts minutes from 1992-01-01. Bytes 48-51 are the station's
-own clock: it lands inside each capture's packet header window and steps forward about ten
-minutes from one block to the next. Bytes 12-15 are constant within a capture and an hour
-or two behind it, which reads as when the block's contents were assembled rather than sent.
-
-```
-Station Node 733 bytes  assembled 1998-11-01 01:39  station clock 1998-11-01 03:36:09 GMT
-Station Node 733 bytes  assembled 1998-11-01 01:39  station clock 1998-11-01 03:46:15 GMT
-```
-
-That clock is a third independent witness to when a tape was made, after the packet headers
-and the Time commands: on the April tape it reads `1998-04-19 02:51:47` against packet
-headers of `02:48` and a Time command of `02:59:27`.
-
-The rest is left alone. A pair of 32 bit counters advance monotonically, scattered single
-bits look like a node bitmap, and there is a table of nine eighteen-byte records - but seven
-instances is not enough to name fields from, and `SSLOAD.DLL` is no help, sending type 21 to
-its trace function as it does type 20.
-
-**Daylight Saving Change** - two 32 bit minute counts, bytes 2-5 and 6-9, on the same
-epoch as every other timestamp: the instants the station moves its clock forward and back.
-The April capture sends `1998-04-05 02:00` and `1998-10-25 01:00`, which are the two US
-daylight saving transitions of 1998 - a date nobody had to be told. The pair is repeated
-unchanged on every send.
-
-What SSLOAD.DLL settles
------------------------
-
-The patent describes the protocol; the loader *is* an implementation of it, and the two
-agree. `SSLOAD.DLL` (122,880 bytes, 23 April 1999) exports one real entry point,
-`EPG_DBLoad`, and imports the rest of its data model from `dbsets.dll` next to it. Both
-were read the same way the compression table was: parse the PE, disassemble, and follow
-the string and import tables.
-
-Three things came out of it.
-
-**A command descriptor table.** At image offset `0x14610` there are 64 eight byte entries
-indexed by `byte0 & 0x3F`: a handler pointer, and a flags byte whose bit 7 selects a two
-byte length and whose low bits give the fixed header size. It is the authoritative version
-of the two length sets in `lib/starsight.py`, and it disagrees with them in one place -
-**type 15 takes a one byte length, not two**. No capture contains a type 15, so nothing
-decoded here has ever depended on it. The table also settles the 47 types the two sets say
-nothing about, and its header sizes match what the decoder already used: 11 bytes for Show
-List, which is exactly where `decode_show_list` starts reading slots.
-
-Nineteen types have a real handler. Ten of them are the ones already decoded here; the
-loader stubs types 20, 21, 22, 24 and 32-35 to its trace function and leaves the rest
-unimplemented. So **nine command types exist that this has never seen**: 9, 10, 31, 36,
-37, 38, 39, 40 and 42. Given that the Access schema underneath has tables for stations,
-networks, genres, subgenres, ratings and enhancements that nothing in these captures
-fills, those nine are the obvious place the missing names live.
-
-**The attribute vocabulary.** The loader writes into an Access database whose schema is
-spelled out in `dbsets.dll` as literal column names. A broadcast carries exactly five
-hard flags - `TS Pay Per View`, `TS Closed Caption`, `TS Stereo`, `TS Rerun`,
-`TS Tape Inhibited` - of which StarSight populates the first four and leaves the rest
-zero, plus three more (`TS Other Properties Exist`, `TS Alternate Data Exists`,
-`TS Alternate Audio Exists`) it never sets. Anything beyond that is an extensible
-*broadcast property* attached to a program, and the resource string table names the four
-StarSight ships as abbreviation, name and pictogram triples: `CC`/Closed Caption,
-`STER`/Stereo, `PPV`/Pay Per View, `RRUN`/Rerun - and `B/W`.
-
-That is what promotes closed captioning and stereo from probable to confirmed here. The
-bits had been read off the wire as 6 and 5 of the Show Title flag byte, adjacent to black
-and white at bit 4; the loader tests the same three bits in the same order and hands them
-to Closed Caption, Stereo and B/W.
-
-**Fields the captures did carry after all.** The same tables carry a content rating system
-("Extended MPAA Based Rating System for StarSight", with TV-Y, TV-Y7, TV-G, TV-PG, TV-14
-and TV-MA), five content advisories (nudity, violence, adult situations, adult themes,
-adult language) and a two digit year formatted `19%d`. They ride the Show Description
-command's extended form. The wider model behind it is three levels deep - a `Channel` is a
-(tuning space, channel number) binding to a `Station` over a time range, and a station
-belongs to a `Network` - which is why a Show List channel id is an internal number and not
-a call sign, and why resolving it needs the type 4 command none of these captures caught.
-
-What actually changed in the decoder
-------------------------------------
-
-| finding | effect on output |
+| Byte | Field |
 |---|---|
-| Show Description bit 3 selects an extended form; text starts at byte 10 | 55 of the April capture's 233 descriptions were garbled and now are not |
-| Description ids are 16 bits | ids ran to 529,489, now 4 to 6,330 |
-| A slot's show id is 16 bits, bytes 2-3 | 7 slots of 43,430 stop being corrupted by a bit error in the flags |
-| A Show Title's show id is 16 bits | none - the nibble was zero on all 11,161 titles |
-| A Show List channel id is 15 bits | none - the spare bit is unused in all five captures |
-| Type 15 takes a one byte length | none - no capture contains a type 15 |
+| 0 | bit 7: encrypted; bit 6: which key; bits 0-5: the command type |
+| 1, or 1-2 | the command's length, counting from byte 0 |
 
-The loader accepts all 64 command types. `cc_decoder` still rejects a packet containing a
-type it does not know, which is deliberate: the loader can afford to be permissive because
-it trusts two CRCs, and exact command tiling is the only integrity check here. Accepting
-33 more types would give noise 33 more ways to tile.
+Whether the length takes one byte or two depends on the type. The full table of 64 types
+is in [the reference](starsight-protocol.html#commands); these are the ones with a known
+meaning:
 
-What comes out
---------------
-
-Records are written as they arrive, the way `decode_xds_packets` writes XDS, so
-`out.starsight` is a log of the guide in broadcast order with a timecode on every line
-rather than a report assembled at the end.
-
-The schedule is always broadcast ahead of the names: measured over the whole October
-capture, not one of its 23,836 slots had its title already in hand, and 16,294 got one
-later. So a Show List slot goes out as it arrives with its show id, and a Show Title
-then completes every slot it names - a `Guide` line at the moment a receiver could
-first have displayed that entry.
-
-```
-00:12:05;11  Show List    ch 449    1998-11-04 18:30 GMT   30 min  id 13     (title not sent yet)
-00:21:00;23  Show Title   id 13      theme 644    Amazing Animals
-00:21:00;23  Guide        ch 449    1998-11-04 18:30 GMT   30 min  id 13     Amazing Animals
-```
-
-Alongside the log, `out.starsight.html` draws the schedule **as the guide itself drew
-it**: channels down the side, half hours across the top, and each program one cell as
-wide as it is long. US6498895B2 calls that "an array of irregular cells, which vary in
-length, corresponding to different television program lengths", and the reason it has to
-be arithmetic rather than table columns is that a slot runs 5 minutes or 240 and nothing
-divides evenly - a cell is placed at `start x pixels-per-minute` and sized by its
-duration. The strip scrolls sideways across the whole captured window; the day tabs jump
-to a day; the box underneath is the patent's "channel information box", showing the rest
-of whichever slot is under the pointer.
-
-The grid is the one place the page joins anything, and only in the direction the broadcast
-supports: a cell shows its program's title when a Show Title has named it and `#12345`
-when none has, which is exactly the distinction the log's `Guide` lines draw. A cell also
-carries its theme, description number, show group and attribute bits, so nothing the Show
-List held is lost by drawing it this way rather than as rows - a slot whose flag byte sets
-one of the four bits nothing names keeps the raw byte too, which happens twice in 43,430.
-Pay per view cells are tinted and a program already running when its list starts takes a
-marked edge, so both read without hovering; a key under the grid says which is which.
-
-A grid drawn at a fixed width per minute has to be bounded, because a bit error in a Show
-List's 32 bit start time carries every slot of that command with it. One in the 1994
-capture lands 123 slots in the year 9312, which asks for 128 million half-hour headings and
-gigabytes of markup. The window is therefore measured out from the middle of the schedule
-rather than its edges, so no single slot can move it, and anything beyond is counted in the
-key instead of drawn.
-
-Then **Reception**, which is what the Sequence Number command is for: how many packets the
-counter says were sent, how many arrived, and where the gaps fall. The remaining command
-types stay in tables of their own, unjoined:
-
-| table | what it holds |
-|---|---|
-| Show Title | show number, theme number, title |
-| Show Description | description number, year, rating system, rating, advisories, description |
-| Time | the station clock, about twice a minute |
-| Daylight Saving Change | the two instants the station moves its clock |
-| Lost packets | where the gaps in the sequence numbers fall |
-| Commands | every command type seen, with counts |
-
-Times are the station's wall clock where a Time command supplied the offset. Clicking a
-column heading sorts that table and pushes earlier choices down as further keys, so any
-grouping can be built up without writing the data out once per arrangement.
-
-The October capture draws 23,836 cells over 201 channels and five days in a 1.7 MB page,
-in about a tenth of a second. A capture with no Show List - April is one - has no grid, and
-says so.
-
-`out.starsight.json` is the same data normalized for a query engine, against
-`docs/starsight.schema.json`: entity tables for channels, themes, programs and
-descriptions, one flat table of listings that names its channel and program by the ids
-the broadcast used, and the station clock. Every instant is GMT.
-
-**It contains only what the broadcast carried.** No source file, no decoder name or
-version, no decode timestamp, no packet or command counts, no record of what failed to
-decode - none of that is in the document, because none of it is guide data. What a
-particular run of the decoder did is in `out.starsight` and on the console; the JSON is
-the guide. Programs carry the Show Title attribute bits, all three of which - closed
-captioning, stereo and black and white - are now confirmed against `SSLOAD.DLL`.
-Descriptions carry everything the extended form of their command held: the year, the
-rating system and the rating within it, and the content advisories by name.
-
-```json
-{"id":62,"text":"TV14 Bank robber and wife flee to Mexican border. Steve McQueen, ...",
- "ratingSystem":3,"rating":3,"year":1972,"advisories":["violence","adult situations"]}
-```
-
-The rating system and rating stay as the two numbers the broadcast sent. They are not
-translated, because the same code means different things in different systems and the
-loader does not translate them either - where a rating has a printable name it is already
-at the front of the text, which is where `SSLOAD.DLL` reads it from too. What the numbers
-clearly do is separate: system 0 is the one every adult title in the April capture uses.
-
-Three things there were measured rather than assumed. Renumbering entities densely by
-how often they are referenced **makes the gzipped file larger**: gzip already models the
-repetition, and shortening a five digit token leaves it less to match. Nesting listings
-under their program is worse again and ruins the two queries that matter, what is on a
-channel at a time and what is on everywhere at an instant. Shipping prebuilt indexes
-costs 56% more to save five milliseconds a browser can spend itself. So the file stays
-flat, on-wire ids, no indexes - about 2.8 MB raw and 226 KB gzipped for a 23,836 listing
-capture, parsing in roughly 7 ms.
-
-Each capture carries a guide window a few days ahead of its own clock, each with an
-absolute GMT start, a duration and a show id:
-
-| capture | slots | channels | window | named in capture |
-|---|---|---|---|---|
-| 31 Oct | 23,836 | 201 | 1998-11-03 .. 11-07 | 16,294 |
-| 7 Nov | 19,594 | 201 | 1998-11-11 .. 11-14 | 17,879 |
-
-A slot goes unnamed only when its Show Title never came round on the carousel inside
-the captured half hour; the title table itself decodes completely. November names more of
-its own slots than October does from fewer of them - 17,879 of 19,594 against 16,294 of
-23,836 - because its half hour caught more of the title carousel, not because it carries
-a better schedule.
-
-The April capture carries titles and descriptions but no Show List at all.
-
-```
-1998-11-03 00:00 GMT  ch 10601    30 min  M*A*S*H
-1998-11-03 02:00 GMT  ch 571      60 min  WWF RAW
-1998-11-03 04:30 GMT  ch 717     240 min  SIGN OFF
-```
-
-The text compression table
---------------------------
-
-Strings are Huffman compressed unless compressing one would make it longer, so all but
-a few dozen titles per capture are compressed. US6216265B1 defers the table to
-"Appendix A" - a composite document of gate array schematics that no patent office
-ever printed, and which is absent from every member of the family, including the 215
-page Canadian one.
-
-**The table was recovered from a shipped implementation instead.** Microsoft licensed
-the StarSight data format in 1996 - the obligation to hand over "decryption of the
-StarSight data stream, StarSight data formats" is recorded in StarSight's FY1996 10-K -
-and put the resulting decoder on the Windows 98 CD as `SSLOAD.DLL`, the "Microsoft
-StarSight Guide Data Loader". It carries the table as a 256 byte binary tree, with a
-31 entry phrase dictionary beside it. The same bytes appear in `SSSCAN.EXE` and
-`BPCCTL.DLL` on that disc, and the same code independently in Gemstar's own DOS tool
-`FREQCCD_.EXE`, which still has its Borland debug symbols attached and names the
-modules `DECOMP.CPP` and `DYNADICT.CPP`.
-
-It is Huffman over **127 symbols**, Kraft sum exactly 1. The reason reading it as a
-character code failed is that symbols `0x01`-`0x1F` are not control characters: they
-expand to whole words and fragments - `' the '`, `'ing '`, `'and '`, `"'s "`, `'tion'`,
-`'when '`. The code averages about 6.3 bits per token and a token is often several
-characters, so per-character statistics never lined up.
-
-That two layer design is StarSight's own, and they patented it:
-[US5548338A](https://patents.google.com/patent/US5548338A/en), "Compression of an
-electronic programming guide", claims Huffman coding over characters *and* replacement
-strings chosen for their savings. It prints only illustrative tables rather than the
-real one, but it describes the structure exactly.
-
-`lib/starsight_table.py` holds it, and `docs/huffman-recovery.md` is the account of how
-it was found. Decoding the three captures:
-
-| | commands | decode cleanly |
-|---|---|---|
-| titles | 11,161 | **11,161 (100%)** |
-| descriptions | 233 | **233 (100%)** |
-
-Every title and every description in all three captures decodes, and the decoder reports
-nothing undecodable. Not all of them are compressed - a string goes out in the clear when
-compressing it would make it longer, which is 36 of the April capture's 3,640 titles. Six
-descriptions used to fail here and were written up as VBI bit errors; they were not, they
-were the extended form being read from the wrong offset.
-
-```
-Show Title   id 9555    theme 97     Wanted: Dead or Alive
-Show Title   id 35386   theme 367    Amityville II: The Possession
-Show Title   id 7885    theme 651    Las Vegas Senior Classic, Second Round
-Show Desc    id 64      TV14 Gun battles; routine stops lead to gunfire.
-```
-
-Independently, a ciphertext-only attack run before the table was found had recovered
-46 codewords and 607 readable titles by bootstrapping from crib-solved anchors, and
-every codeword it produced agrees with the table - including the word symbols `The `,
-`of `, `to `, `& `, `'s `, `and `, `er`, `an`, `in`, `th`, `ar`, `un`, `ur`, `al`,
-`st`. What that attack could not have found alone is the framing: it was converging on
-the right answer for the wrong structural reason.
-
-Repeated channels
------------------
-
-A channel id is **a position in a line-up, not a station**, so the same station appears
-under several of them and their schedules come out identical. In the October capture 201
-channel ids carry only **173 distinct schedules**: 45 of the ids fall into 17 groups whose
-listings match exactly, the largest being eight ids - 4602, 4603, 4606, 4608, 4609, 8360,
-14830 and 18925 - carrying one station between them.
-
-That is the broadcast, not the decoder. Each of those ids arrives in its own Show List
-command with its own id in bytes 4-5, and **all 17 groups reappear as the same 17 groups
-in the November capture**, a separate tape a week later. Bit errors do not reproduce
-across tapes. It is also what `SSLOAD.DLL`'s schema says should happen: its `Channel`
-table is a (tuning space, channel number) binding with a `C Station ID` pointing at a
-separate `Station`, so many channels to one station is the design. One stream fed cable
-systems across the country and a receiver kept the ids its own line-up used.
-
-Channels whose listings are *nearly* identical are a different thing, and worth knowing
-when reading one capture. The schedule is broadcast a day at a time, all 201 channels in a
-block, and the first block in the October capture is the only incomplete one:
-
-| day | channels carried | |
-|---|---|---|
-| 3 Nov | 139 of 201 | the first block in the recording |
-| 4 Nov | 201 | |
-| 5 Nov | 198 | three lost to bit errors |
-| 6 Nov | 201 | |
-| 7 Nov | 201 | |
-
-The obvious reading is that recording began part way through that block, and it is the
-likely one, but the capture does not quite prove it: the channel order differs from day to
-day, so the 62 absences cannot be mapped onto positions in another day's block to show
-they are a clipped prefix. What the capture does show is that they are concentrated at the
-front - 15 of the first 20 channels of the next day's order are among them - and that no
-later block is short this way.
-
-Either way the effect on reading the data is the same: 62 channels have four days where
-their twins have five, which makes a pair look like a partial copy of each other when it
-is only a partial recording.
-
-Of 1,005 possible channel-days, three are genuinely lost. Measured over the whole capture
-the tiling check
-accepts **1,027 packets and rejects 3** - 619 bytes of 194,467, 0.3% - and each of those
-three is about the size of one Show List command, so the two counts plausibly describe the
-same three losses, though nothing here proves they are.
-
-Nothing is truncated inside what did arrive: across all 941 Show List commands the slot
-counts declare 23,836 slots and the decoder reads 23,836, with 939 of the 941 consuming
-their bytes exactly. The two that do not are bit errors, and neither invents a channel -
-one declares 0 slots with a year-6145 timestamp and the top bit set on its channel, so it
-contributes nothing at all, and the other overruns its last slot's optional fields by four
-bytes, costing one slot in 23,836.
-
-### What the loader does about both
-
-`SSLOAD.DLL` was written against the same two problems, and its answers say the decoder's
-are right.
-
-**It never merges two channel ids.** Every table it writes is opened on an index -
-`?OpenIndexed@CDatabaseRecordset` is called fourteen times in one function, once per
-recordset - and for most tables that index is named `TSSLoadBy`, a key in the loader's own
-id space rather than the database's. Records are then written with `UpdateRS`, having been
-built with `0x4A4D4120` where their real id goes: seek by the loader's key, update the row
-if it is there and add it if it is not. So a channel id that arrives again on the carousel
-lands on its own row and nothing is duplicated - and two *different* ids stay two rows,
-because nothing in a Show List says they are one station. Only a Channel Data command
-carries the station binding, and none of these captures has one. The loader keeps them
-apart for exactly the reason this does.
-
-It does normalise in the one direction the broadcast supports: the episode is written
-first and `?EpisodeID@CEpisodeT` is called to fetch its key when the time slot is built, so
-a program carried on eight channels is stored once and referenced eight times - which is
-the shape of `out.starsight.json`, programs deduplicated and listings per channel.
-
-**Partial data is the expected case, not an error.** The loader keeps two `COleDateTime`
-fields - at `0xF4` and `0x100` in its state - and extends them against every time slot it
-writes, so by the end of a load they are the earliest and latest instant it actually
-received. It then runs two parameterised deletes: `Delete Expired Time Slot`, bounded by a
-date, and `Delete Omitted Time Slot`, bounded by **that pair** and its own loader id. It
-prunes only inside the window it can see, so a channel-day that never arrived is not taken
-as a channel-day that was cancelled - whatever a previous load put there survives.
-
-That is a receiver designed to accumulate across broadcasts rather than treat any one
-reception as complete, which is what a half hour off a carousel forces, and it is the same
-model `starsight_merge.py` uses: absence is not deletion.
-
-Merging tapes
--------------
-
-One capture is a half hour of a carousel: part of a schedule, and part of the names for
-it. `starsight_merge.py` reads the `.starsight.json` of several decodes and writes one
-merged export and one merged page, through the same code that renders a single decode.
-
-```
-python3 starsight_merge.py 'KET_1998-1*.starsight.json' -o KET-november
-```
-
-It is worth doing. The October tape carries 23,836 listings and names 16,294 of them
-inside its own half hour; merged with the November tape a week later, **20,959 of those
-same October listings have a title** - 4,665 more - because November's carousel came round
-on shows October's did not reach. Across both, 38,843 of 43,430 listings are named.
-
-Everything is keyed rather than concatenated, and keyed the way the loader keys it:
-
-- **A channel's day is the unit.** The loader replaces what it receives rather than adding
-  to it, bounding its `Delete Omitted Time Slot` by the window the load covered. So when
-  two tapes both carry a channel-day the later one wins it outright, instead of both
-  surviving as overlapping listings. The decoder does the same within a capture, for a
-  Show List that comes round again.
-- **A repeated key updates.** The loader writes every record with `UpdateRS` against an
-  index in its own id space - seek, update if present, add if not - so the newest value of
-  a show number or description wins.
-- **Recency comes from the tapes themselves**, from their Time commands, so the order the
-  files are passed in does not matter.
-
-Passing the same file twice changes nothing.
-
-**Show numbers are reused, so tapes must come from one season.** This is the thing to
-know before merging, and the captures measure it:
-
-| tapes | apart | show numbers in both | naming different programs |
+| Type | Command | Length bytes | |
 |---|---|---|---|
-| 31 Oct, 7 Nov | one week | 2,209 | **1** |
-| 18 Apr, 31 Oct | six months | 801 | 116 |
-| 18 Apr, 7 Nov | seven months | 1,323 | 189 |
+| 1 | Time | 1 | [the clock](#the-clock) |
+| 2 | Daylight Saving Change | 1 | [the clock](#the-clock) |
+| 3 | Region | 2 | [channels and lineups](#channels-and-lineups) |
+| 4 | Channel Data | 1 | [channels and lineups](#channels-and-lineups) |
+| 5 | Show List | 2 | [the schedule](#the-schedule) |
+| 6 | Show Title | 1 | [the schedule](#the-schedule) |
+| 8 | Show Description | 1 | [the schedule](#the-schedule) |
+| 9 | Region Name | 1 | [channels and lineups](#channels-and-lineups) |
+| 10 | Cycle Start | 1 | [the station](#the-station) |
+| 11 | Theme Category | 2 | [themes](#themes) |
+| 12 | Theme Sub-Category | 2 | [themes](#themes) |
+| 13 | Subscriber Reset | 1 | [receiver control](#receiver-control) |
+| 14 | Authorization | 1 | [receiver control](#receiver-control) |
+| 17 | Key Distribution | 1 | [receiver control](#receiver-control) |
+| 20 | Sequence Number | 1 | [the clock](#the-clock) |
+| 21 | Station Node Status | 2 | [the station](#the-station) |
+| 22 | Long Assign IR Codes | 2 | no layout known |
+| 24 | Subscriber Unit | 2 | no layout known |
+| 31 | Postal Code | 2 | [channels and lineups](#channels-and-lineups) |
+| 32 | News Service | 2 | [the news service](#the-news-service) |
+| 33 | News Menu | 2 | [the news service](#the-news-service) |
+| 34 | News Page | 2 | [the news service](#the-news-service) |
+| 36 | Segmented Command | 2 | [below](#segmented-commands) |
+| 37-40 | (unnamed) | 2 | [receiver control](#receiver-control) |
+| 42 | (unnamed) | 2 | [receiver control](#receiver-control) |
 
-A number is stable within a season and recycled between them - show 4903 is
-"Countdown to Signing Day" in April and "Pee-Wee's Playhouse" by October. Merging across
-that boundary mixes two meanings of one number and no choice of winner is right, so the
-tool takes the newer, which is what the loader would do, and says how often it had to:
+### Encryption
 
-```
-306 of 3588 show numbers shared between inputs name something different (9%)
-** these captures look like different seasons.
-```
+Bit 7 of byte 0 marks an encrypted command and bit 6 says which of two keys enciphered it.
+A receiver without the key cannot read one. An encrypted Show List keeps bytes 0-10 in
+the clear - its version, channel, start and slot count - and enciphers only its slots. The
+cipher is unknown.
 
-Under a couple of percent is one season and the merge is sound. Nine percent is not.
-Channel numbers are internal to a StarSight line-up too, so tapes from different markets
-should never be merged for the same reason.
+### Segmented commands
 
-`--expire` adds the loader's other delete, dropping listings that had already finished by
-the newest capture's clock. It is off by default because it is a receiver's rule and not
-an archive's: run against the October and November tapes together it drops all 23,836 of
-October's listings, which is exactly right for a box in November 1998 and exactly wrong
-for a record of what was broadcast. Against a single capture it removes nothing at all -
-the guide runs days ahead of the tape that carried it.
+A command too long for one packet travels in parts, each a Segmented Command (type 36).
 
-The research in this repository
-------------------------------
-
-| file | what it is |
+| Byte | Field |
 |---|---|
-| `docs/starsight.md` | this: the protocol, and what is left of it |
-| `docs/ssload-analysis.md` | how Microsoft's loader was read, and what each finding rests on |
-| `docs/huffman-recovery.md` | how the compression table was recovered, including the wrong turns |
-| `docs/starsight-protocol.json` / `.html` | every mapping as a table - the reference for the format |
-| `docs/starsight.schema.json` | the separate question of what a decoded capture looks like |
-| `docs/ssload-tables.json` | the raw tables read out of `SSLOAD.DLL` and `dbsets.dll` |
-| `docs/samples/*.commands.txt` | real commands off the wire, as hex - the evidence |
-| `docs/replay_commands.py` | runs those back through the decoder, without ffmpeg |
-| `docs/capture_commands.py` | what wrote them; takes `cc_decoder.py`'s own arguments |
+| 3 | high nibble: this part, from 0; low nibble: the last part |
+| 4 | which message the part belongs to |
+| 5.. | the part |
 
-Three scripts regenerate all of it, and none of them needs a video:
+Joined in order, the parts form one command, beginning with its own type and length and
+followed by a CRC-32 that has to check as a packet's body check does. The whole is at most
+3,000 bytes. A part of another message abandons the message in progress, and so does a
+part out of order. The news service is sent this way.
 
-```
-python3 docs/starsight_tables.py                         # the protocol tables
-python3 docs/ssload_extract.py SSLOAD.DLL dbsets.dll \
-        -o docs/ssload-tables.json                       # the loader's own tables
-python3 docs/replay_commands.py docs/samples/*.commands.txt
-```
 
-`starsight_tables.py` reads its constants back out of `lib/starsight.py`, so the published
-tables cannot drift from the decoder that uses them, and the command widths in them can be
-diffed against `ssload_extract.py`'s output to check the decoder against the loader.
-`replay_commands.py` runs a saved capture's commands through the decoder without ffmpeg,
-which is the cheap way to see what a change does to real data. Two captures are saved
-whole rather than sampled, because the schedule is broadcast well ahead of the names and a
-slice from the front of the stream is all Show List: it would never exercise the join. The
-replay reproduces the video decode exactly - 43,222 records and 16,294 slots named for
-31 October, the same numbers the 557 MB capture produces - in about a second.
+Text
+----
 
-| sample | commands | what it covers |
-|---|---|---|
-| `KET_1998-04-18` | 4,274 | Show Title, Show Description including all 55 extended, Time, Daylight Saving Change |
-| `KET_1998-10-31` | 5,060 | Show List and the slot walker, 23,836 slots over 201 channels, and the title join |
+A string is either in the clear - printable ASCII ended by a NUL - or **compressed**. In a
+Show Title or Show Description, bit 7 of the flag byte says which. A string is sent
+compressed unless compressing it would make it longer, so most are.
 
-The binaries themselves are not here - they are Microsoft's - but
-`docs/ssload-analysis.md` records what they are, where they came from and their checksums,
-and `docs/ssload-tables.json` holds everything read out of them.
+Compression is a fixed Huffman code of 127 symbols, with codewords of 4 to 20 bits:
 
-What is left
+- `0x00`, the NUL that ends the string. What follows it in the last byte is padding.
+- `0x01`-`0x1F`, 31 phrases: `' the '`, `'s '`, `'ing '`, `'and '`, `'tion'`, `"'s "`,
+  `'when '`, `'with '`, `'The '` and other common fragments.
+- `0x20`-`0x7E`, the printable characters.
+
+The whole table is in [the reference](starsight-protocol.html#compression) and in
+`lib/starsight_table.py`. A codeword outside the table, or a terminator anywhere but the
+last byte, means the string was damaged.
+
+Some strings are never compressed: theme category and sub-category names. Region names are
+always compressed. The news service has its own rules (see
+[the news service](#the-news-service)).
+
+
+The clock
+---------
+
+**Time** (type 1) is the station's clock, sent about twice a minute.
+
+| Byte | Field |
+|---|---|
+| 2-5 | the time, to the minute |
+| 6 | bits 0-3: the station's standard offset from GMT in whole hours; bit 4: the offset is west (negative); bit 6: this channel is **not a StarSight provider**; bit 7: daylight saving is in force, so the wall clock is an hour ahead of the offset |
+| 7 | seconds |
+
+A receiver scanning for the channel that carries its guide passes over one whose Time sets
+bit 6. A feed that carries the guide for many markets at once sets it.
+
+**Daylight Saving Change** (type 2) gives the two instants the station changes its clock:
+when daylight saving starts (bytes 2-5) and ends (bytes 6-9). It repeats unchanged with the
+Time commands.
+
+**Sequence Number** (type 20) is a 32 bit counter in bytes 2-5, one per packet, rising by
+one. A gap is that many packets lost. A checksum only says a packet arrived damaged; the
+counter says how many never arrived at all.
+
+
+The schedule
 ------------
 
-**Nothing in the strings.** Every title and every description in every capture now
-decodes - 11,161 and 233 of them. The six descriptions previously listed here as VBI bit
-errors were not: they were the extended form being read from the wrong offset.
+Three commands make the schedule. A **Show List** lays out one channel's day as a run of
+slots, each naming a program by its show id; a **Show Title** names a show id; a **Show
+Description** carries a longer text that a slot can point at.
 
-**Nothing in the packet.** Both checksums are reproduced and both are checked; the
-maximum packet size the loader accepts, `0x7F8`, is honoured.
+### Show List (type 5)
 
-**The dynamic dictionary.** `FREQCCD_.EXE` loads a `DDPACKET.BIN` through a
-`DYNADICT.CPP` module, a word level layer above the character code. Nothing in these
-captures appears to need it, but it is the one documented part of the codec that has
-not been read.
+| Byte | Field |
+|---|---|
+| 3 | low nibble: a version |
+| 4-5 | channel id, 15 bits; the top bit is unused |
+| 6-9 | start of the first slot: a GMT midnight |
+| 10 | slot count |
+| 11.. | the slots |
 
-How Silent Radio fits in
+A slot is four bytes, with optional fields after them:
+
+| Byte | Field |
+|---|---|
+| 0 | flags |
+| 1 | duration in minutes |
+| 2-3 | show id |
+| +2 | description id, when flag `0x80` is set |
+| +2 | show group, when flag `0x20` is set |
+
+| Flag | Meaning |
+|---|---|
+| `0x80` | a description id follows |
+| `0x40` | pay per view |
+| `0x20` | a show group follows |
+| `0x1E` | unused |
+| `0x01` | on the first slot: the program was already running when the list starts |
+
+Slots carry durations, not start times: each starts where the one before it ended. The
+slot count bounds the list, so a damaged command cannot run its clock on into the future.
+
+A Show List covers one channel for one day. A later list for the same channel and day
+replaces it, and a receiver skips a list whose version it already holds.
+
+### Show Title (type 6)
+
+| Byte | Field |
+|---|---|
+| 2 | flags |
+| 3-4 | show id |
+| 5-6 | theme id (see [themes](#themes)) |
+| 7.. | the title |
+
+| Flag | Meaning |
+|---|---|
+| `0x80` | the title is compressed |
+| `0x40` | closed captioned |
+| `0x20` | stereo |
+| `0x10` | black and white |
+| `0x0F` | unused |
+
+### Show Description (type 8)
+
+| Byte | Field |
+|---|---|
+| 2 | flags |
+| 3-4 | description id |
+| 7 | extended form only: bits 7-5 a critic's rating in stars, bits 4-1 a film rating |
+| 8 | extended form only: content advisories |
+| 9 | extended form only: the year, last two digits, zero for none |
+| 7.. or 10.. | the text |
+
+| Flag | Meaning |
+|---|---|
+| `0x80` | the text is compressed |
+| `0x40`, `0x20`, `0x10` | closed captioned, stereo, black and white: the bits of the Show Title of the program described |
+| `0x08` | the extended form: bytes 7-9 are present and the text starts at byte 10 |
+
+Description ids are a numbering of their own, not show ids: a slot points at a description
+through its optional field.
+
+The film rating codes are:
+
+| Code | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| Rating | NR | G | NC-17 | PG | PG-13 | R | NC-17 | NC-17 |
+
+Code 2 also appears on some unrated films, so it may mean any rating outside the MPAA's.
+
+| Advisory bit | Meaning |
+|---|---|
+| `0x02` | nudity |
+| `0x04` | violence |
+| `0x08` | adult situations |
+| `0x10` | adult themes |
+| `0x80` | adult language |
+| `0x01`, `0x20`, `0x40` | unknown |
+
+Two more things are carried in the text itself. A text that opens with a TV Parental
+Guidelines rating - `TVY`, `TVY7`, `TVG`, `TVPG`, `TV14`, `TVM` or `TVMA` - gives the
+program's TV rating (`TVM` is the original name for TV-MA). A text ending ` (R).` marks a
+rerun.
+
+
+Themes
+------
+
+A Show Title's theme id says what kind of program it is. The theme commands are the
+receiver's search menus, and they are the only thing that names a theme.
+
+**Theme Category** (type 11) names the top-level categories.
+
+| Byte | Field |
+|---|---|
+| 3 | version; a change means every name is to be reloaded |
+| 4 | entry count |
+| 5.. | entries: id (1 byte), flags (1), length (1), then that many bytes holding a NUL-terminated name |
+
+The categories run from 1 Movies to 11 Miscellaneous. What the flag byte means is unknown.
+
+**Theme Sub-Category** (type 12) gives one category's menu.
+
+| Byte | Field |
+|---|---|
+| 3 | the category it belongs to |
+| 4 | entry count, low 7 bits |
+| 5.. | entries: the entry's length (1 byte), flags (1), a count of theme ids (1), the theme ids (2 each), then the name, NUL-terminated |
+
+A theme is listed in every sub-category that fits it. Each category's menu opens with an
+`All ...` entry listing all its themes and closes with a `Closed Captioned` one. So theme
+640 is in Movies under Action/Adventure, in Children's under Cable in the Classroom, and
+in Action/Mystery/Horror under Action/Adventure/Thriller. What the flag byte means is
+unknown.
+
+
+Channels and lineups
+--------------------
+
+A Show List names its channel by a **channel id**: a position in StarSight's own numbering,
+not a station. A **Region** - one cable system's lineup, or one market's stations for an
+antenna - says which channel ids a receiver there can see and the number each sits on.
+**Channel Data** names a channel id: a station's call letters and network, or a cable
+service's name. Several channel ids can carry the same station's schedule.
+
+### Region (type 3)
+
+| Byte | Field |
+|---|---|
+| 3-4 | region id |
+| 5 | flags: bit 0, apply now; bit 5, a cable lineup rather than an antenna's |
+| 6-9 | the time the lineup takes effect |
+| 10 | channel count, so a lineup holds at most 255 |
+| 11.. | four bytes a channel |
+
+| Entry byte | Field |
+|---|---|
+| 0 | bit 7: bit 8 of the channel number; bits 0-6: the channel id's high 7 bits |
+| 1 | the channel id's low 8 bits |
+| 2 | the channel number's low 8 bits: the number the channel sits on in this region |
+| 3 | bits 0-1: the tier - 0 basic, 1 extended, 2 premium, 3 pay per view; bits 6-7 unknown |
+
+A receiver keeps the lineup for its own region and ignores the rest. Unless bit 0 of byte 5
+says to apply it now, a lineup waits until the stream's clock reaches its effective time.
+A new lineup is merged into the one held: a channel in both keeps the name it already had,
+and a channel missing from the new one is dropped.
+
+### Channel Data (type 4)
+
+| Byte | Field |
+|---|---|
+| 1 | length, 16 |
+| 2 | unknown |
+| 3 | bit 7: bit 8 of the channel number; bits 0-6: the channel id's high 7 bits |
+| 4 | the channel id's low 8 bits |
+| 5 | bit 1: a cable service, shown by name rather than number |
+| 6 | the channel number's low 8 bits: the channel a station broadcasts on, zero for a cable service |
+| 7 | short label: one bit a character, `0x80` for byte 8 down to `0x01` for byte 15 |
+| 8-15 | the name, padded |
+
+A station's name is `CALL-NET`: its call letters, a dash and its network - `WKYC-NBC` on
+channel 3. A receiver splits it at the first dash from the fourth character on, and looks
+the network up by name. A cable service's eight characters are its name, which can hold a
+dash of its own - `SCI-FI`, `CNN-HLN` - and is not split. Byte 7 picks up to four of the
+eight characters as a short label for a narrow display: `HEADLINE` with `0x9A` gives `HDLN`.
+Stations send no label.
+
+Channel Data names a channel; it does not create one. A receiver ignores it for a channel
+id no Region has given it.
+
+### Region Name (type 9)
+
+Bytes 2-3 are a region id and the rest of the command is its name, compressed: `columbus,
+oh`, `akron - time warner cable`.
+
+### Postal Code (type 31)
+
+| Byte | Field |
+|---|---|
+| 3-8 | the postal code, as text |
+| 9 | unknown |
+| 10 | count of antenna regions |
+| 11 | count of cable regions |
+| 12.. | the region ids, two bytes each: the antenna regions, then the cable ones |
+| then | the news area the code is filed under (see [news](#the-news-service)) |
+| then | unknown |
+
+### Setting up a receiver
+
+A receiver is set up with a postal code. It waits for the Postal Code command for that
+code and keeps the two tables of region ids it lists - one for an antenna, one for cable.
+It then keeps the Region Names of those regions and offers them to the viewer, who picks
+one. From then on the receiver keeps that region's lineup. Postal Codes are sent in sort
+order, so a receiver that has passed its own code without finding it knows the code is not
+served.
+
+
+The news service
+----------------
+
+The news service is a menu of sections - national and world news, weather, sports stories
+and scores, horoscopes, business - with pages under them. The commands are usually sent
+inside [Segmented Commands](#segmented-commands).
+
+**News Service** (type 32): bytes 3-6 unknown, byte 7 the length of the name that follows -
+`StarSight NEWS Services`.
+
+**News Menu** (type 33): byte 3 unknown, byte 4 a section count, then for each section its
+number (1 byte), five unknown bytes, a name length (1 byte) and the name.
+
+**News Page** (type 34):
+
+| Byte | Field |
+|---|---|
+| 3 | the section the page is under |
+| 4 | unknown |
+| 5-6 | page number |
+| 7 | flags |
+| 8-9 | unknown |
+| 10 | area: the news area of the postal codes the page is for, or zero for every area |
+| 11-14 | when the page was written |
+| 15 | unknown |
+| 16 | title length |
+| 17.. | the title |
+| then | text length, 16 bits; bit 15 set when the text is in the clear |
+| then | the text |
+
+Names and titles are compressed as other strings are, or occasionally in the clear. A
+page's text breaks its lines differently: compressed, it uses the `0x1F` phrase - `'ur'`
+everywhere else - as the line break, and spells `ur` out a letter at a time; in the clear,
+it breaks lines with CR. Within a line, `` `i ``, `` `a `` and `` `d `` set the words after
+them apart, up to `` `e `` or the end of the line.
+
+```
+Weather  page 3449  area 0x57  1997-08-01 12:09  Ashtabula
+THURSDAY July 31, 1997
+ Winds: NE,12mph   Hum:  60%
+ Night: Low 60. Clear
+FRIDAY
+ 84 / 68. Partly sunny &
+ warm
+```
+
+A receiver shows the pages filed under its own area and those for everyone.
+
+
+The station
+-----------
+
+### Station Node Status (type 21)
+
+The station's report on itself, every one to ten minutes. Its times are **Unix seconds**,
+and a time nothing has set holds `0x12CEA600` - 1 January 1980, the zero of a DOS clock.
+Byte 3 gives the layout: 1, 3 or 4.
+
+| Byte | Field |
+|---|---|
+| 3 | layout |
+| 4-5 | in layouts 3 and 4, a software release: 200, 403 and 405 are known |
+| 6-7 | the stream id, as in the packet header |
+| 8-11 | a time, constant over a session |
+| 12-15 | when the block's contents were assembled; unset in layout 4 |
+| 48-51 | layouts 3 and 4: the station's clock when the block was sent |
+| 58-61 | layout 1: the station's clock |
+
+Layout 1 is short. Bytes 38-39, 50-51 and 40-41 count how far the station is through a
+cycle - the total, how many are done and how many remain - and bytes 66-67 count minutes
+since the assembly time. The block grows by two bytes, all zero, for every eight minutes.
+
+Layouts 3 and 4 are 721 to 743 bytes long. Layout 4 is layout 3 with ten bytes inserted at
+byte 420 - an unset time and six zero bytes - so from there on its fields sit ten bytes
+later.
+
+| Byte (layout 3) | Field |
+|---|---|
+| 56-57 | how many bits of each minute map are in use, 1,433 to 1,440 |
+| 58-237 | the first minute map |
+| 238-417 | the second minute map |
+| 432-459 | what the station holds, fourteen 16 bit counts |
+| 460-461 | the stream id again |
+| 462 | the number of tables, 14 |
+| 463-714 | what the station lacks: an 18 byte record a table |
+| 721-724 | a daily time; from software 403 on |
+
+**The minute maps** each cover the last day at a bit a minute, the first bit the most
+significant. The count at 56 gains one a minute; when it would pass 1,440, both maps turn a
+byte to the left and the count drops by eight. The bit just before the count is the
+current minute. What a set bit means is unknown.
+
+**The inventory** describes the station's own copy of the guide, in fourteen tables: the
+regions, channels, Show Titles and Show Descriptions it holds, then the schedules of ten
+days starting with the GMT day of its clock, each counted in channels. Bytes 432-459 give
+how many it holds of each. Each 18 byte record gives how many it lacks, then the lowest
+eight missing ids in ascending order, zero where there are fewer. For a day, the ids are
+channel ids, and what it holds plus what it lacks is every channel.
+
+**The daily time** falls at the same local time every day at a station, in the early
+hours, and is always the latest one before the clock. What happens then is unknown.
+
+### Cycle Start (type 10)
+
+Nine bytes marking the start of a cycle of the carousel. A receiver scanning for the guide
+counts them, to know it has seen a whole cycle. What its bytes say is unknown.
+
+
+Receiver control
+----------------
+
+**Subscriber Reset** (type 13) asks receivers to discard what they hold.
+
+| Byte | Field |
+|---|---|
+| 2 | bit 0: clear the stored guide; bit 1: clear it and stop loading until restarted |
+| 3-7 | the receiver it is for; zero for every receiver |
+
+Either bit clears the lineup, the schedules and the themes.
+
+**Authorization** (type 14) and **Key Distribution** (type 17) each address one receiver,
+by bytes 2-5. Key Distribution runs through receivers in rising order. The rest of both is
+opaque.
+
+**Type 42** switches the guide on and off. Bits 4-5 of byte 8 are 0 to stop a receiver
+acting on Region, Channel Data, Show List, the theme commands and types 36 and 37, and 1 to
+let it act on them again; 2 and 3 change nothing. The rest of the command is unexplained.
+
+**Types 37 to 40** have known layouts but no known purpose.
+
+| Type | Layout |
+|---|---|
+| 37 | byte 3, low nibble: a version, under which a day already held is skipped; bytes 4-5: a count of region ids, which follow from byte 6 and name the regions it is for; then a midnight within the next seven days, a count of entries, and that many entries of a byte and a 16 bit value |
+| 38 | bytes 3-4: an id; bytes 5-7: flags, with the low three bits of byte 7 the first of three lengths and bytes 8 and 9 the others; bytes 10-11: a 16 bit value; from byte 12: three payloads of those lengths, one after another |
+| 39 | bytes 3-4: an id; bytes 5-6: a 16 bit value; bytes 7-10: a 32 bit value; byte 11: a byte |
+| 40 | bytes 3-4: an id; byte 5: a byte; from byte 6: a payload, up to the length |
+
+
+How a receiver builds the guide
+-------------------------------
+
+**The guide is a carousel.** The commands go round and round, so a receiver that tunes in
+at any moment eventually hears all of them. A receiver accumulates: what it hears adds to
+or revises what it holds, and nothing it fails to hear is taken as deleted.
+
+**The schedule comes before the names.** Show Lists run days ahead, and the Show Titles
+that name their slots come round later on their own cycle. Until its title arrives, a slot
+has only a show id.
+
+**Keys update in place.** A show id, description id, channel id or region heard again
+replaces what was held under it. A Show List replaces the channel's day it covers. A
+receiver drops slots that have finished.
+
+**Show ids are reused.** A number is stable within a season and reassigned between
+seasons, so the same show id can name different programs a few months apart.
+
+**A guide is local.** A receiver keeps one region's lineup and the news pages for its own
+area. Channel ids, and so schedules, mean something only within StarSight's numbering, and
+a cable system's channel numbers only within its region.
+
+
+Decoding with cc_decoder
 ------------------------
 
-Silent Radio fed scrolling LED signs from the VBI. Its decoder patent,
-[US4620227A](https://patents.google.com/patent/US4620227A/en) (Cybernetic Data
-Products, 1986), specifies 32x line rate, a clock run in, a 2 bit dwell, a 1 bit start
-and sixteen data bits - the CEA-608 waveform - and its actual invention is
-line-agnostic capture, "regardless of the horizontal line". That is the same bearer
-Gemstar 1X uses, which is why the issue's request led here. The captures are named for
-Silent Radio but carry StarSight. The second Cybernetic patent,
-[US4551720A](https://patents.google.com/patent/US4551720A/en), is often cited as the
-VBI one and is not - it describes the twisted pair bus inside the sign.
+### Running it
 
-Decoding a capture
-------------------
+The decoder reads the VBI rows of a video through `ffmpeg`. For a `vhs-decode` TBC VBI
+capture, 910 samples a line and 16 lines a field:
 
 ```
 ffmpeg -hide_banner -f rawvideo -pixel_format y16 -framerate 59.94 -video_size 910x16 \
@@ -734,13 +583,188 @@ ffmpeg -hide_banner -f rawvideo -pixel_format y16 -framerate 59.94 -video_size 9
   | cc_decoder.py --start_line 0 --end_line 15 --ccformat srt,xds,starsight - -o out
 ```
 
-`weave` pairs the two fields into a frame, which is what the caption field logic
-expects, and halves the frame rate to 29.97 so the default `--frame_rate` is correct.
-Without it the two caption channels interleave and the text comes out shredded.
+For a cx18 VBI dump, 1440 samples a line and lines 10-21 of each field, with StarSight on
+line 14 (rows 8 and 9 once woven):
 
-The StarSight line is one continuous byte stream that alternates fields - taking either
-field alone yields zero valid packets, while both in order yield a full parse. `weave`
-puts the two fields of a VBI line on adjacent rows, so the decoder reads them in order.
+```
+ffmpeg -hide_banner -f rawvideo -pixel_format gray -framerate 59.94 -video_size 1440x12 \
+       -i capture.vbi -vf "weave,scale=720:24" -c:v ffv1 -f matroska pipe:1 \
+  | cc_decoder.py - --ccformat starsight --start_line 8 --end_line 9 -o out
+```
 
-`out.starsight` carries the guide log and a closing summary. `out.T1.srt` has the line
-21 captions and `out.xds` the XDS.
+`weave` puts the two fields of a frame on alternate rows, which is what both decoders need:
+the caption decoder pairs fields that way, and the StarSight decoder reads a line's two
+fields in order as the one stream they are. It also halves the frame rate to 29.97, so the
+default `--frame_rate` is right.
+
+Some tapes also carry a Gemstar data line at twice the rate on lines 16-18. It is not
+StarSight and is not read.
+
+### How the line is read
+
+- **Each VBI line is a stream of its own.** A row range can be wide: a line that carries
+  something else, or a weaker copy of the StarSight line, costs only its own packets, and a
+  packet two lines both deliver is kept once.
+- **The header check finds packets.** A `0x2C` whose header checks starts a packet; once it
+  does, the size is trusted, so a packet whose body fails is skipped whole.
+- **A damaged packet is repaired where the checksum allows.** A field that did not slice
+  leaves two unknown bytes in place rather than shifting the rest of the packet. Because the
+  CRC is linear, its 32 bits are 32 equations in the packet's bits, and bits whose position
+  is known can be solved for: the bytes of a lost field, and the bits the slicer decided by
+  the narrowest margins. Those are tried a few at a time, widening only while the checksum
+  refuses, so the answer assumes as few broken bits as it can and keeps most of the
+  checksum to verify with. With no lost field, one or two flipped bits anywhere are also
+  searched for. Anything repaired has to split exactly into commands as well.
+- **The commands have to fill the packet exactly.** A packet holding a command type with
+  no known length is rejected.
+- **A tape can hold several recordings.** When the packet clock jumps back more than an
+  hour or ahead more than a day, or the stream id changes, and the next packet agrees, a
+  new recording starts. Each gets its own page and export, named with its date:
+  `out.1999-09-19.starsight.html`, `out.1997-08-01.starsight.html`.
+
+| Damage | Unknown bits | Checksum bits left | Outcome |
+|---|---|---|---|
+| none | 0 | 32 | passes as it stands |
+| bits the slicer doubted, 2 rising to 20 | 2 - 20 | 30 - 12 | solved |
+| one lost field | 16 | 16 | solved |
+| one flipped bit the slicer was sure of | 1 | about 21 | searched |
+| two flipped bits | 2 | about 12 | searched |
+| two lost fields | 32 | 0 | refused |
+
+### The log
+
+`out.starsight` is the guide in broadcast order, a timecode on every line, written as the
+commands arrive. Because the schedule comes before the names, a Show List's slots are
+logged with their show ids, and when a Show Title arrives a `Guide` line completes each
+slot it names - the moment a receiver could first have shown it:
+
+```
+00:12:05;11  Show List    ch 449    1998-11-04 18:30 GMT   30 min  id 13     (title not sent yet)
+00:21:00;23  Show Title   id 13      theme 644    Amazing Animals
+00:21:00;23  Guide        ch 449    1998-11-04 18:30 GMT   30 min  id 13     Amazing Animals
+```
+
+It closes with a summary: the commands of each type, how many packets passed both checks
+or were repaired, and the packets the sequence numbers say were lost.
+
+### The page
+
+`out.starsight.html` shows the guide as a receiver drew it: channels down the side, half
+hours across the top, and each program a cell as wide as it is long. Pay per view programs
+are tinted and one already running when its list starts has a marked edge. Pointing at a
+cell shows the rest of its slot - times, theme, description, show group and attributes.
+
+- A channel shows as Channel Data named it: `3 WKYC` for a station, its name for a cable
+  service.
+- Where Regions were received, a **lineup** picker shows the guide as a receiver in that
+  region drew it: only its channels, in its order and under its numbers.
+- Where the news service was received, a **news viewer** shows its menu, the pages of the
+  chosen section and the page itself. An area, or a postal code, narrows it to the pages
+  for that area and for everyone.
+- A line above the viewers gives the packets' time span, stream and the loss the sequence
+  numbers show.
+
+The grid's window is measured out from the middle of the schedule, so a slot whose start
+a bit error has moved years away is listed under the grid rather than stretching it.
+
+Under the viewers every command type the capture carried has its own table, folded until
+opened. Clicking a column heading sorts a table, and earlier choices stay on as further
+keys. A table nothing filled is left out, and so is a column no row fills.
+
+| Table | What it holds |
+|---|---|
+| Show Title | show number, theme number and name, the CC, stereo and B/W bits, whether it was compressed, title |
+| Show Description | description number, year, stars, rating and its code, TV rating, advisories, rerun, the CC, stereo and B/W bits, whether it was compressed, description |
+| Show List | each channel's day: its start, version and slot count |
+| Theme Category, Theme | the search menus, and every theme number by the menus that list it |
+| Channel Data | a channel id's number, call letters and network or cable service name, short label, and how many lineups carry it |
+| Region | each region's name, cable or antenna, and its lineup by tier under its own numbers |
+| Postal Code | the antenna and cable regions offered for a postal code, and its news area |
+| News Menu, News Page | the sections, and the latest copy of every page with its line breaks, flags and unexplained bytes |
+| Encrypted | each encrypted command whole, and for a Show List the channel, day and slot count its clear header gives |
+| Time | the station clock, and whether it says the channel is not a provider |
+| Daylight Saving Change | the two instants the station moves its clock |
+| Station Node Status | layout, release, stream, times, cycle counts, daily time and the minute maps |
+| Station Node inventory | what the station holds and lacks of each table, block by block |
+| Station Node Status bytes | each block as a hex dump beside its ASCII and CEA-608 reading |
+| Subscriber Reset | what each reset asked for, and the command whole |
+| Authorization, Key Distribution, Cycle Start, types 37-40 and 42 | a table each, every field |
+| Lost packets | where the gaps in the sequence numbers fall |
+| Packets | every packet: the time and stream id in its header and its sequence number |
+| Commands | every command type seen, with counts |
+| Not decoded | everything that arrived and could not be decoded, whole, and why |
+
+Times on the page are the station's wall clock where a Time command gave its offset.
+
+### The JSON export
+
+`out.starsight.json` is the same guide normalized for a query engine, as
+[`starsight.schema.json`](starsight.schema.json) describes: entity tables for channels,
+themes, programs and descriptions, and one flat table of listings that names its channel
+and program by the ids the broadcast used, in time order. Beside them are the Show Lists'
+versions, the lineups, postal codes and theme menus, the news service, the clock, the
+packets, the encrypted and addressed commands, Station Node Status whole and as read, and
+whatever could not be decoded, whole, with the reason. Every instant is GMT. A channel's
+number is the one Channel Data gives; the number it sits on in a cable system is in that
+region's lineup.
+
+```json
+{"id":62,"text":"TV14 Bank robber and wife flee to Mexican border. Steve McQueen, ...",
+ "stars":3,"rating":3,"ratingName":"PG","year":1972,"advisories":["violence","adult situations"]}
+```
+
+The page and the export are two views of one model: every field a command decodes into is
+in both, a byte nothing explains is kept as sent, and a command that cannot be decoded is
+kept whole. The export holds only what the broadcast carried - no decoder name, version or
+timestamp, and no count of failed or repaired packets, which are in the log. It is flat
+and keeps the on-wire ids, without indexes, which a page rebuilds in milliseconds.
+
+### Merging captures
+
+One capture is part of a carousel: part of a schedule and part of the names for it.
+`starsight_merge.py` reads the exports of several decodes and writes one merged export and
+page, keyed the way a receiver keys them:
+
+- **A channel's day is the unit.** When two captures both carry a channel-day, the later
+  one wins it outright.
+- **A repeated id updates.** The newest title or description for an id wins.
+- **Recency comes from the captures' own Time commands**, so the order the files are
+  given in does not matter, and passing the same file twice changes nothing.
+
+```
+python3 starsight_merge.py 'KET_1998-1*.starsight.json' -o KET-november
+```
+
+Because show ids are reused between seasons, merge only captures from one season. The tool
+reports how many show ids the inputs share that name different programs. Within a season
+that is a fraction of a percent; several percent means the captures are from different
+seasons and the merged titles cannot all be right:
+
+```
+306 of 3588 show numbers shared between inputs name something different (9%)
+** these captures look like different seasons.
+```
+
+Channel ids are StarSight's own and lineups local, so captures from different markets
+should not be merged either.
+
+`--expire` drops listings that had finished by the newest capture's clock, as a receiver
+would. It is off by default, because across captures a week apart it deletes the older
+one's whole schedule: right for a receiver, wrong for a record of what was broadcast.
+
+
+Open questions
+--------------
+
+- **The encryption.** The cipher and keys behind encrypted Show Lists, Authorization and
+  Key Distribution.
+- **Station Node Status.** What a set bit in the minute maps means, the counters and times
+  at bytes 16-47, 52-55 and 420-431 of layout 3, the short counts at 715-732, and what the
+  daily time marks.
+- **Types 37 to 40**, whose layouts are known and whose purpose is not, and the rest of
+  type 42.
+- **Types 22, 24 and 35**, which have no known layout.
+- **Unexplained bytes**: bits 6-7 of a lineup entry's tier byte, Channel Data byte 2,
+  Postal Code byte 9 and its last byte, the news commands' unread bytes, the theme flag
+  bytes, Cycle Start's bytes, and advisory bits `0x01`, `0x20` and `0x40`.
+- **Film rating code 2**, nominally NC-17.

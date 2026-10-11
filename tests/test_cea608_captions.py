@@ -43,6 +43,7 @@ SMALL_U_UMLAUT = (0x12, 0x25)
 CAPITAL_U_UMLAUT = (0x12, 0x24)
 MUSIC_NOTE = (0x11, 0x37)
 RCL2 = (0x1C, 0x20)
+TR2 = (0x1C, 0x2A)
 RTD2 = (0x1C, 0x2B)
 EDM2 = (0x1C, 0x2C)
 CR2 = (0x1C, 0x2D)
@@ -820,6 +821,29 @@ def test_data_channels_share_a_field():
     assert {name: cues(srt) for name, srt in files(SRTCaptionTrack, {14: line}).items()} == {
         'CC1.srt': [('00:00:00,267', '00:00:00,367', 'ABCD')],
         'CC2.srt': [('00:00:00,300', '00:00:00,400', 'XY')],
+    }
+
+
+def test_a_channel_that_is_only_blanked_writes_nothing():
+    # CEA-608-E D.4
+    blanking = [RCL2, RCL2, EDM2, EDM2]
+    clearing = [EOC2, EOC2, EDM2, EDM2, TR2, TR2, RTD2, RTD2]
+    line = blanking + [RCL, RCL, ROW_15] + chars('AB') + [EOC, EOC] + blanking + [RTD1, RTD1] + chars('CD') + \
+        [CR, CR] + clearing + [RCL, RCL, EDM, EDM] + blanking
+    alone = [NULL if pair in blanking + clearing else pair for pair in line]
+    for track in (SCCCaptionTrack, SRTCaptionTrack, TextCaptionTrack, HTMLCaptionTrack):
+        written_files = files(track, {14: line})
+        assert {name.split('.')[0] for name in written_files} == ({'T1'} if track is TextCaptionTrack else {'CC1', 'T1'})
+        assert written_files == files(track, {14: alone})
+
+
+def test_held_codes_are_written_once_the_channel_shows_a_character():
+    # CEA-608-E D.4
+    line = [EDM2, EDM2, RCL2, ROW_15_CHANNEL_2] + chars('AB') + [EOC2]
+    assert files(SCCCaptionTrack, {14: line}) == {
+        'CC2.scc': 'Scenarist_SCC V1.0\n\n'
+                   '00:00:00;00\t1c2c \n'
+                   '00:00:00;05\t1c20 1c70 c1c2 1c2f \n',
     }
 
 

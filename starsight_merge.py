@@ -30,8 +30,8 @@ import json
 import os
 import sys
 
-from lib.starsight import (merge_guides, read_starsight_json, write_starsight_html,
-                           write_starsight_json)
+from lib.starsight import (listings, merge_guides, read_starsight_json,
+                           write_starsight_html, write_starsight_json)
 
 # a season's worth of tapes disagrees on about one show number in a thousand; tapes six
 # months apart disagree on one in seven. Anything above a couple of percent is the
@@ -54,9 +54,9 @@ def expand(patterns):
 
 
 def summarise(name, guide):
-    channels = {slot[1] for slot in guide['slots']}
+    slots = listings(guide)
     return '%-34s %6d listings %4d channels %5d titles %4d descriptions' % (
-        name, len(guide['slots']), len(channels), len(guide['titles']),
+        name, len(slots), len({slot[1] for slot in slots}), len(guide['titles']),
         len(guide['descriptions']))
 
 

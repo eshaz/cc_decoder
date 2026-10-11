@@ -11,7 +11,7 @@
   "additionalProperties": false,
   "properties": {
     "channels": {
-      "description": "Every channel the listings refer to, from the channel field of the Show List commands.",
+      "description": "Every channel the listings, the lineups or a Channel Data command refer to. From the channel field of the Show List commands, the Region lineups and the Channel Data commands.",
       "type": "array",
       "items": {
         "type": "object",
@@ -21,38 +21,38 @@
         "additionalProperties": false,
         "properties": {
           "id": {
-            "description": "Identifies a channel. Referenced by listings[].channel. From the low 15 bits of bytes 4-5 of a Show List command. It names a position in a line-up rather than a station, so several ids can carry one station and show identical listings.",
+            "description": "Identifies a channel. Referenced by listings[].channel and regions[].lineup[].channel. From the low 15 bits of bytes 4-5 of a Show List command. It names a position in StarSight's numbering rather than a tuning position, so several ids can carry one station and show identical listings.",
             "type": "integer",
             "minimum": 0,
             "maximum": 65535
           },
           "callSign": {
-            "description": "The station's call letters. From bytes 8-15 of a Channel Data command, which carry one string of the form CALL-NET; the loader splits it at the first dash from the fourth character on and this is the part before it. Absent unless a Channel Data command was captured, which none so far has been.",
+            "description": "A station's call letters, or a cable service's name. From bytes 8-15 of a Channel Data command. A station sends one string of the form CALL-NET, split at the first dash from the fourth character on, and this is the part before it; a cable service (showsCallSign) sends its name, kept whole because it can carry a dash of its own - SCI-FI, CNN-HLN, DSC-KIDS. Absent unless a Channel Data command was captured.",
             "type": "string"
           },
           "channelNumber": {
             "type": "integer",
             "minimum": 0,
             "maximum": 511,
-            "description": "The position the channel is tuned at, 9 bits. From the Region command's lineup entry for this channel, or from byte 6 of a Channel Data command with its top bit in byte 3, which encode it identically. Absent unless one of those was captured."
+            "description": "The channel a station broadcasts on, 9 bits. From byte 6 of a Channel Data command with its top bit in byte 3. Absent for a cable service, which sends zero, and unless a Channel Data command was captured. The number a channel sits on in a cable system is that region's, in regions[].lineup."
           },
           "showsCallSign": {
             "const": true,
-            "description": "The receiver should show the call sign rather than the channel number. From bit 1 of byte 5 of a Channel Data command. Omitted when false."
+            "description": "A receiver should show the name rather than a number: a cable service, with no channel of its own. From bit 1 of byte 5 of a Channel Data command. Omitted when false."
           },
           "network": {
-            "description": "The network the station carries, such as CBS. From the part of bytes 8-15 of a Channel Data command after the dash, which the loader looks up in a table of network names. Absent unless a Channel Data command was captured and named one.",
+            "description": "The network a station carries, such as CBS. From the part of a station's CALL-NET string after the dash. Absent for a cable service, and unless a Channel Data command named one.",
             "type": "string"
           },
           "label": {
-            "description": "A four character short form of the call sign, for a display too narrow for the whole of it. From the four of bytes 8-15 of a Channel Data command that the presence mask in byte 7 selects. Absent unless a Channel Data command was captured.",
+            "description": "Up to four characters of the name for a display too narrow for the whole of it: HEADLINE gives HDLN. From the characters of bytes 8-15 of a Channel Data command that the presence mask in byte 7 selects. Stations send none. Absent unless a Channel Data command was captured.",
             "type": "string"
           }
         }
       }
     },
     "themes": {
-      "description": "Every theme the programs refer to, from the theme field of the Show Title commands.",
+      "description": "Every theme the programs or the theme menus refer to, from the theme field of the Show Title commands and the Theme Sub-Category lists.",
       "type": "array",
       "items": {
         "type": "object",
@@ -62,14 +62,80 @@
         "additionalProperties": false,
         "properties": {
           "id": {
-            "description": "Identifies a genre and subgenre together. Referenced by programs[].theme. From bytes 5-6 of a Show Title command.",
+            "description": "Identifies a genre and subgenre together. Referenced by programs[].theme and themeCategories[].subCategories[].themes. From bytes 5-6 of a Show Title command. Which menus list it is in themeCategories.",
             "type": "integer",
             "minimum": 0,
             "maximum": 65535
+          }
+        }
+      }
+    },
+    "themeCategoryVersion": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "Byte 3 of the Theme Category command: the version the categories came under; a change means every name is to be reloaded. Absent unless one was captured."
+    },
+    "themeCategories": {
+      "description": "The receiver's search menus, from the Theme Category and Theme Sub-Category commands. Absent unless one was captured.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "subCategories"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Identifies a category. From the entry id of a Theme Category command, and byte 3 of the Theme Sub-Category commands that fill it.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
           },
           "name": {
-            "description": "The genre's label. From the NUL-terminated name in a Theme Category or Theme Sub-Category entry - the only strings in the format that are not compressed. Absent unless one of those commands was captured, which none so far has been.",
+            "description": "The category's name, such as Movies. From a Theme Category entry, NUL terminated and not compressed.",
             "type": "string"
+          },
+          "subCategories": {
+            "description": "The menus under the category, in the order sent. Each opens with an 'All ...' list of all its themes and closes with a 'Closed Captioned' one, and a theme sits in as many as fit it.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "themes",
+                "flags"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "description": "The menu's name, such as Action/Adventure.",
+                  "type": "string"
+                },
+                "themes": {
+                  "description": "The themes it lists. References themes[].id.",
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535
+                  }
+                },
+                "flags": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The flag byte of the sub-category's entry, byte 1 of it. Nothing names it.",
+                  "maximum": 255
+                }
+              }
+            }
+          },
+          "flags": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The flag byte of the category's entry in the Theme Category command, byte 1 of it. Nothing names it.",
+            "maximum": 255
           }
         }
       }
@@ -113,6 +179,10 @@
             "description": "The program is in black and white. From bit 4 of byte 2 of a Show Title command. Omitted when false.",
             "type": "boolean",
             "const": true
+          },
+          "uncompressed": {
+            "const": true,
+            "description": "The title was sent in the clear rather than Huffman coded: bit 7 of byte 2 of the Show Title command is clear. Omitted when it was compressed."
           }
         }
       },
@@ -145,17 +215,31 @@
             "maximum": 1999,
             "description": "The year the program was made. From byte 9 of a Show Description command, which carries the last two digits and is present only on the extended form that bit 3 of the flag byte selects."
           },
-          "ratingSystem": {
+          "stars": {
             "type": "integer",
             "minimum": 0,
             "maximum": 7,
-            "description": "Which rating scheme the rating belongs to. Qualifies descriptions[].rating. From the top three bits of byte 7 of a Show Description command, on the extended form only."
+            "description": "A critic's rating in stars, 0 when there is none. From the top three bits of byte 7 of a Show Description command, on the extended form only."
           },
           "rating": {
             "type": "integer",
             "minimum": 0,
             "maximum": 15,
-            "description": "How the program is rated within ratingSystem. From bits 4-1 of byte 7 of a Show Description command, on the extended form only. Left as the broadcast number because one code means different things in different systems; where a rating has a printable name it already begins the text."
+            "description": "The film rating code as broadcast. From bits 4-1 of byte 7 of a Show Description command, on the extended form only. descriptions[].ratingName names it."
+          },
+          "ratingName": {
+            "type": "string",
+            "enum": ["NR", "G", "PG", "PG-13", "R", "NC-17"],
+            "description": "The name of descriptions[].rating: 0 NR, 1 G, 2 NC-17, 3 PG, 4 PG-13, 5 R, 6 and 7 NC-17. Absent for codes above 7, which have no name."
+          },
+          "rerun": {
+            "type": "boolean",
+            "description": "The program is a rerun. Present when the text ends ' (R).', which marks one."
+          },
+          "tvRating": {
+            "type": "string",
+            "enum": ["TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "TV-MA"],
+            "description": "The TV Parental Guidelines rating the text opens with, which the broadcast writes without the hyphen (TVPG). TVM, the original name, is given as TV-MA, which replaced it."
           },
           "advisories": {
             "type": "array",
@@ -163,7 +247,23 @@
               "type": "string"
             },
             "uniqueItems": true,
-            "description": "What the rating warns about. Qualifies descriptions[].rating. From the bits of byte 8 of a Show Description command, on the extended form only. Omitted when none is set."
+            "description": "What the rating warns about. Qualifies descriptions[].rating. From the bits of byte 8 of a Show Description command, on the extended form only. Bits 0, 5 and 6, which nothing names, appear as 'unknown bit 0', 'unknown bit 5' and 'unknown bit 6'. Omitted when none is set."
+          },
+          "closedCaptioned": {
+            "const": true,
+            "description": "The program described is closed captioned. From bit 6 of byte 2 of a Show Description command, the same bit the program's Show Title carries. Omitted when false."
+          },
+          "stereo": {
+            "const": true,
+            "description": "The program described is in stereo. From bit 5 of byte 2 of a Show Description command. Omitted when false."
+          },
+          "blackAndWhite": {
+            "const": true,
+            "description": "The program described is in black and white. From bit 4 of byte 2 of a Show Description command. Omitted when false."
+          },
+          "uncompressed": {
+            "const": true,
+            "description": "The text was sent in the clear rather than Huffman coded: bit 7 of byte 2 is clear. Omitted when it was compressed."
           }
         }
       }
@@ -207,7 +307,7 @@
             "maximum": 1048575
           },
           "description": {
-            "description": "The synopsis to show with this program. References descriptions[].id. From the two optional bytes that bit 7 of the slot flags selects. Usually dangles: no capture so far carries both a schedule and the descriptions its slots point at.",
+            "description": "The synopsis to show with this program. References descriptions[].id. From the two optional bytes that bit 7 of the slot flags selects. It names a description the capture may not have carried.",
             "type": "integer",
             "minimum": 0,
             "maximum": 65535
@@ -236,6 +336,279 @@
         }
       }
     },
+    "showLists": {
+      "type": "array",
+      "description": "One entry per channel-day, as its Show List command last sent it: the version it came under. Its slots are in listings.",
+      "items": {
+        "type": "object",
+        "required": [
+          "channel",
+          "start",
+          "version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "References channels[].id. From bytes 4-5 of the Show List command.",
+            "maximum": 32767
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When its first slot begins, GMT: a midnight. From bytes 6-9."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Byte 3 of the Show List command; its low nibble is a version, and a receiver skips a day it already holds at it.",
+            "maximum": 255
+          }
+        }
+      }
+    },
+    "regions": {
+      "description": "The lineups: which channels a receiver on one cable system, or with an antenna in one market, can see and the numbers they sit on there. From the Region and Region Name commands. Absent unless one was captured.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Identifies a region. From bytes 3-4 of a Region command or bytes 2-3 of a Region Name command; referenced by postalCodes.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "name": {
+            "description": "The region's name, such as 'akron - time warner cable'. From a Region Name command, compressed, at most 34 characters.",
+            "type": "string"
+          },
+          "cable": {
+            "description": "A cable system's lineup rather than an antenna's. From bit 5 of byte 5 of a Region command. Absent with the lineup.",
+            "type": "boolean"
+          },
+          "effective": {
+            "description": "When the lineup applies from, GMT. From bytes 6-9 of a Region command; absent when it is the epoch, meaning always.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "applyNow": {
+            "const": true,
+            "description": "Apply the lineup at once. From bit 0 of byte 5 of a Region command. Omitted when false."
+          },
+          "lineup": {
+            "description": "The channels, in the order sent. Absent when only a Region Name was captured.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "channel",
+                "number",
+                "tier"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "channel": {
+                  "description": "References channels[].id. From 15 bits of the first two bytes of an entry.",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 32767
+                },
+                "number": {
+                  "description": "The number the channel sits on in this region, 9 bits. From the third byte of an entry with its top bit in the first.",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 511
+                },
+                "tier": {
+                  "description": "The fourth byte of an entry as sent. Its low two bits are the tier the system sells the channel in - 0 basic, 1 extended, 2 premium, 3 pay per view - and bits 6 and 7 are set on a few entries for reasons nothing names.",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "postalCodes": {
+      "description": "What a receiver set up with a postal code is offered. From the Postal Code commands. Absent unless one was captured.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "broadcastRegions",
+          "cableRegions"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "The postal code. From bytes 3-8 of a Postal Code command.",
+            "type": "string"
+          },
+          "broadcastRegions": {
+            "description": "The antenna lineups offered. References regions[].id.",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "cableRegions": {
+            "description": "The cable lineups offered. References regions[].id.",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          "newsArea": {
+            "description": "The area its news pages are filed under. References news.pages[].area. From the byte after the region tables.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          },
+          "unread": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "Byte 9 of the Postal Code command and the byte after its news area, as hex; their meaning is unknown."
+          }
+        }
+      }
+    },
+    "news": {
+      "description": "The news service the guide carried: its name, its menu and the latest copy of each page. From the News Service, News Menu and News Page commands, which arrive inside Segmented Commands. Absent unless one was captured.",
+      "type": "object",
+      "required": [
+        "sections",
+        "pages"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "service": {
+          "description": "The service's name, such as 'StarSight NEWS Services'. From a News Service command.",
+          "type": "string"
+        },
+        "sections": {
+          "description": "The menu, in the order sent.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "The section number pages name. From the first byte of a News Menu entry.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "name": {
+                "description": "The section's name, such as Weather.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "bytes": {
+                "type": "string",
+                "pattern": "^([0-9a-f]{2})*$",
+                "description": "The five bytes of the section's menu entry between its number and its name, as hex. Nothing reads them."
+              }
+            }
+          }
+        },
+        "pages": {
+          "description": "Each page as it last went out.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "section",
+              "page",
+              "area",
+              "written",
+              "title",
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "section": {
+                "description": "References news.sections[].id. From byte 3 of a News Page command.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "page": {
+                "description": "The page number. From bytes 5-6.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535
+              },
+              "area": {
+                "description": "The area a postal code is filed under for this page, 0 for a page for everyone. From byte 10.",
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "written": {
+                "description": "When the page was written, GMT. From bytes 11-14, minutes since 1992-01-01.",
+                "type": "string",
+                "format": "date-time"
+              },
+              "title": {
+                "description": "The page's title, such as Ashtabula.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "description": "The page, with its line breaks as newlines and its `i, `a and `d attributes left in, each running to `e or the end of its line.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "flags": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Byte 7 of the News Page command, its flag byte. Nothing names its bits.",
+                "maximum": 255
+              },
+              "unread": {
+                "type": "string",
+                "pattern": "^([0-9a-f]{2})*$",
+                "description": "Bytes 4, 8, 9 and 15 of the News Page command, as hex. Nothing reads them."
+              }
+            }
+          }
+        },
+        "serviceBytes": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{2})*$",
+          "description": "Bytes 3-6 of the News Service command, as hex. Nothing reads them."
+        },
+        "menuByte": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte 3 of the News Menu command. Nothing reads it.",
+          "maximum": 255
+        }
+      }
+    },
     "clock": {
       "type": "array",
       "description": "The station clock, from the Time commands, sent about twice a minute.",
@@ -260,6 +633,10 @@
           "daylightSaving": {
             "type": "boolean",
             "description": "The station's wall clock is an hour ahead of utcOffsetMinutes. From bit 7 of byte 6 of a Time command."
+          },
+          "notAProvider": {
+            "const": true,
+            "description": "The channel is not a StarSight provider, and a receiver scanning for the guide passes it over. From bit 6 of byte 6 of a Time command. Omitted when false."
           }
         }
       }
@@ -294,8 +671,561 @@
         "type": "integer",
         "minimum": 0
       },
-      "description": "Numbers the packets, one per packet, so a gap is a packet that never arrived. From bytes 2-5 of the Sequence Number commands, in the order received. Count loss from consecutive steps rather than from the span, since a flipped bit can move one value by up to 2^31."
+      "description": "Numbers the packets, one per packet, so a gap is a packet that never arrived. From bytes 2-5 of the Sequence Number commands, in the order received; packets[].sequence gives each with its packet. Count loss from consecutive steps rather than from the span, since a flipped bit can move one value by up to 2^31."
+    },
+    "packets": {
+      "type": "array",
+      "description": "Every packet that passed both checksums, in the order received.",
+      "items": {
+        "type": "object",
+        "required": [
+          "time",
+          "stream"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The packet header's time, minutes since 1992-01-01, GMT. From bytes 3-6 of the packet."
+          },
+          "stream": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The VBI stream id in the packet header, bytes 7-8. The Station Node Status command carries it too.",
+            "maximum": 65535
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The number the packet's Sequence Number command carried, where it carried one."
+          }
+        }
+      }
+    },
+    "encrypted": {
+      "type": "array",
+      "description": "The commands sent encrypted - bit 7 of byte 0 - which no receiver without the key could read. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "key",
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The command type, the low six bits of byte 0.",
+            "maximum": 63
+          },
+          "key": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Which key: bit 6 of byte 0.",
+            "maximum": 1
+          },
+          "data": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The command whole, as hex."
+          },
+          "channel": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "For a Show List, the channel its header names in the clear. References channels[].id.",
+            "maximum": 32767
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "For a Show List, the start its header gives in the clear, GMT."
+          },
+          "slots": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "For a Show List, the slot count its header gives in the clear.",
+            "maximum": 255
+          }
+        }
+      }
+    },
+    "subscriberResets": {
+      "type": "array",
+      "description": "The Subscriber Reset commands. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "actions",
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the reset asked a receiver to discard, from the bits of byte 2."
+          },
+          "data": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The command whole, as hex."
+          }
+        }
+      }
+    },
+    "authorizations": {
+      "type": "array",
+      "description": "The Authorization commands, type 14, each addressed to one receiver. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "unit",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "unit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The receiver it is for, bytes 2-5."
+          },
+          "payload": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The rest of the command, as hex. Opaque."
+          }
+        }
+      }
+    },
+    "keyDistributions": {
+      "type": "array",
+      "description": "The Key Distribution commands, type 17, each addressed to one receiver; a carousel runs through them in rising order. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "unit",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "unit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The receiver it is for, bytes 2-5."
+          },
+          "payload": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The rest of the command, as hex. Opaque."
+          }
+        }
+      }
+    },
+    "cycleStarts": {
+      "type": "array",
+      "description": "The Cycle Start commands, type 10. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The nine bytes of the command, as hex; what they say is unknown."
+          }
+        }
+      }
+    },
+    "type37": {
+      "type": "array",
+      "description": "Type 37 commands, every field. What they are for is unknown.",
+      "items": {
+        "type": "object",
+        "required": [
+          "version",
+          "regions",
+          "day",
+          "entries"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The low nibble of byte 3.",
+            "maximum": 15
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "description": "The region ids it is for."
+          },
+          "day": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The midnight it is for, GMT."
+          },
+          "entries": {
+            "type": "array",
+            "description": "Its three byte entries.",
+            "items": {
+              "type": "object",
+              "required": [
+                "byte",
+                "value"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "byte": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The entry's first byte.",
+                  "maximum": 255
+                },
+                "value": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "The entry's sixteen bit value.",
+                  "maximum": 65535
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "type38": {
+      "type": "array",
+      "description": "Type 38 commands, every field. What they are for is unknown.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "flags",
+          "parts"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 3-4.",
+            "maximum": 65535
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "minItems": 3,
+            "maxItems": 3,
+            "description": "Bytes 5, 6 and 7 as sent."
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{2})*$"
+            },
+            "description": "The three payloads the lengths in bytes 7, 8 and 9 measure, as hex."
+          }
+        }
+      }
+    },
+    "type39": {
+      "type": "array",
+      "description": "Type 39 commands, every field. What they are for is unknown.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "value",
+          "field",
+          "byte11"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 3-4.",
+            "maximum": 65535
+          },
+          "value": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 5-6.",
+            "maximum": 65535
+          },
+          "field": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 7-10, a thirty-two bit value."
+          },
+          "byte11": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Byte 11.",
+            "maximum": 255
+          }
+        }
+      }
+    },
+    "type40": {
+      "type": "array",
+      "description": "Type 40 commands, every field. What they are for is unknown.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 3-4.",
+            "maximum": 65535
+          },
+          "payload": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "From byte 6 to the length in bytes 1-2, as hex."
+          }
+        }
+      }
+    },
+    "type42": {
+      "type": "array",
+      "description": "Type 42 commands. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "flag": {
+            "type": "boolean",
+            "description": "Whether bits 4-5 of byte 8 switch the guide commands on (true) or off (false). Absent for the two settings that do nothing."
+          },
+          "data": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The command whole, as hex."
+          }
+        }
+      }
+    },
+    "stationNodeStatus": {
+      "type": "array",
+      "description": "The Station Node Status commands, in the order received: each whole, as hex, and the fields read from it. The station's own health rather than guide data. Absent unless one was captured.",
+      "items": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The command whole, as hex from byte 0."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Byte 3: which layout it is.",
+            "maximum": 255
+          },
+          "stream": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 6-7: the VBI stream id the packet headers carry.",
+            "maximum": 65535
+          },
+          "software": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Bytes 4-5, which rise with the years in layouts 3 and 4.",
+            "maximum": 65535
+          },
+          "built": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Bytes 8-11, Unix seconds, GMT. Absent when unset."
+          },
+          "assembled": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Bytes 12-15, Unix seconds, GMT: when the block was put together. Absent when unset."
+          },
+          "clock": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The station clock at sending, Unix seconds, GMT: byte 58 in layout 1 and 48 in layouts 3 and 4."
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Layout 1 only: how many items the station's cycle holds."
+          },
+          "done": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Layout 1 only: how many are done."
+          },
+          "remaining": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Layout 1 only: how many are left."
+          },
+          "daily": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Layouts 3 and 4 from software 403: bytes 721-724 (731-734 in layout 4), Unix seconds, GMT. A time that falls at the same local time every day at a station and is always the latest before the clock: a daily event of a kind nothing names. Absent when unset."
+          },
+          "minutesUsed": {
+            "type": "integer",
+            "minimum": 1433,
+            "maximum": 1440,
+            "description": "Layouts 3 and 4: bytes 56-57, how many bits of each minute map are in use. It gains one a minute, and when it would pass 1,440 both maps turn a byte and it drops by eight; the bit before it is the current minute."
+          },
+          "minuteMaps": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "Layouts 3 and 4: the two maps of the last day at bytes 58 and 238, a bit a minute, each given as the minutes whose bit is set, counted back from the clock's minute, ascending. What a set bit means is not known.",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1439
+              }
+            }
+          },
+          "inventory": {
+            "type": "object",
+            "description": "Layouts 3 and 4: the station's inventory of its own guide database, from byte 432 (442 in layout 4): what it holds of each table and the lowest ids it lacks.",
+            "required": [
+              "regions",
+              "channels",
+              "titles",
+              "descriptions",
+              "days"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "regions": {
+                "$ref": "#/$defs/stationTable",
+                "description": "The regions, lineups, it holds."
+              },
+              "channels": {
+                "$ref": "#/$defs/stationTable",
+                "description": "The channels it holds."
+              },
+              "titles": {
+                "$ref": "#/$defs/stationTable",
+                "description": "The Show Titles it holds."
+              },
+              "descriptions": {
+                "$ref": "#/$defs/stationTable",
+                "description": "The Show Descriptions it holds."
+              },
+              "days": {
+                "type": "array",
+                "minItems": 10,
+                "maxItems": 10,
+                "description": "The schedules of ten days from the clock's own GMT day, each counting the channels that have one and naming the lowest channel ids that do not.",
+                "items": {
+                  "$ref": "#/$defs/stationTable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "undecoded": {
+      "type": "array",
+      "description": "Everything that arrived and could not be decoded, kept whole. Absent when everything decoded.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "why",
+          "data"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The command type, the low six bits of byte 0.",
+            "maximum": 63
+          },
+          "why": {
+            "type": "string",
+            "description": "Why it was not decoded: a text that did not decompress, a type nothing reads, a command shorter than its layout, or the parts of a segmented message that never came together."
+          },
+          "data": {
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$",
+            "description": "The command - or for a segmented message, the parts that came - whole, as hex."
+          }
+        }
+      }
     }
   },
-  "description": "One StarSight electronic program guide. Six tables of what the broadcast carried: channels, themes, programs and descriptions are referenced by the listings that make up the schedule, while the clock, daylight saving and sequence tables stand on their own. Every value comes from a command in the StarSight packet stream carried on a line of the NTSC vertical blanking interval; nothing here describes the decode itself. Times are GMT and ids are as broadcast. Byte layouts are in docs/starsight.md."
+  "$defs": {
+    "stationTable": {
+      "type": "object",
+      "required": [
+        "held",
+        "missing"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "held": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "How many the station holds."
+        },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "How many it lacks."
+        },
+        "firstMissing": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "The lowest ids it lacks, ascending, at most eight. Absent when nothing is missing.",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
+    }
+  },
+  "description": "One StarSight electronic program guide: everything a capture of it carried. Channels, themes, programs and descriptions are referenced by the listings that make up the schedule; the lineups, postal codes and theme menus say how a receiver offered it; the news service, the commands addressed to single receivers, the encrypted commands, the clock, daylight saving, packets and station node status stand on their own; and whatever arrived and could not be decoded is kept whole. Every value comes from a command in the StarSight packet stream carried on a line of the NTSC vertical blanking interval; nothing here describes the decode itself. Times are GMT and ids are as broadcast. Byte layouts are in docs/starsight-protocol.html."
 }

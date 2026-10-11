@@ -1,141 +1,72 @@
 {
- "provenance": {
-  "measured": "Confirmed against the captures, byte for byte.",
-  "loader": "Read from SSLOAD.DLL's own code. No capture contains this, so the layout is as the loader reads it and has not been seen on a wire.",
-  "patent": "Described in the StarSight patents. Neither measured nor present in the loader."
- },
  "packet": [
   {
    "offset": 0,
    "bytes": 1,
    "field": "sync",
-   "note": "Always 0x2C.",
-   "provenance": "measured"
+   "note": "Always 0x2C."
   },
   {
    "offset": 1,
    "bytes": 2,
    "field": "size",
-   "note": "Whole packet in bytes, this header and the trailer included, MSB first. The loader rejects anything above 0x7F8.",
-   "provenance": "measured"
+   "note": "The whole packet in bytes, this header and the trailer included, MSB first. At most 0x7F8."
   },
   {
    "offset": 3,
    "bytes": 4,
    "field": "time",
-   "note": "Minutes since 1992-01-01 GMT, MSB first.",
-   "provenance": "measured"
+   "note": "The minute the packet was sent: minutes since 1992-01-01 GMT, MSB first."
   },
   {
    "offset": 7,
    "bytes": 2,
    "field": "stream",
-   "note": "VBI stream id.",
-   "provenance": "measured"
+   "note": "Stream id, naming the feed."
   },
   {
    "offset": 9,
    "bytes": 2,
-   "field": "header checksum",
-   "note": "CRC-32 of bytes 0-8, low 16 bits, stored LITTLE endian - the only number in the format that way round.",
-   "provenance": "measured"
+   "field": "header check",
+   "note": "The low 16 bits of the CRC of bytes 0-8, least significant byte first."
   },
   {
    "offset": 11,
    "bytes": null,
-   "field": "message",
-   "note": "Concatenated commands, which tile it exactly.",
-   "provenance": "measured"
+   "field": "commands",
+   "note": "Concatenated commands, which fill it exactly."
   },
   {
    "offset": null,
    "bytes": 4,
-   "field": "body checksum",
-   "note": "CRC-32 of everything before it. Running the CRC over the whole packet, this field included, gives zero.",
-   "provenance": "measured"
+   "field": "body check",
+   "note": "The CRC of everything before it, least significant byte first, so that the CRC of the whole packet is zero."
   }
  ],
  "checksums": [
   {
    "property": "algorithm",
-   "value": "Table driven reflected CRC-32",
-   "provenance": "measured"
+   "value": "Table driven reflected CRC-32"
   },
   {
    "property": "polynomial",
-   "value": "0xEDB88320, the standard IEEE one",
-   "provenance": "measured"
+   "value": "0xEDB88320, the standard IEEE one"
   },
   {
    "property": "initial value",
-   "value": "0xFFFFFFFF",
-   "provenance": "measured"
+   "value": "0xFFFFFFFF"
   },
   {
    "property": "final inversion",
-   "value": "none - the register is returned as it stands",
-   "provenance": "measured"
+   "value": "none - the register is returned as it stands"
   },
   {
    "property": "header check",
-   "value": "crc32(bytes 0..8) & 0xFFFF == bytes 9-10 read little endian",
-   "provenance": "measured"
+   "value": "crc(bytes 0..8) & 0xFFFF == bytes 9-10 read little endian"
   },
   {
    "property": "body check",
-   "value": "crc32(the whole packet, its own trailer included) == 0",
-   "provenance": "measured"
-  }
- ],
- "recovery": [
-  {
-   "damage": "nothing",
-   "unknownBits": "0",
-   "candidates": "1",
-   "checksumLeft": "32",
-   "outcome": "passes as it stands"
-  },
-  {
-   "damage": "bits the slicer doubted, 2 rising to 20",
-   "unknownBits": "2 - 20",
-   "candidates": "1",
-   "checksumLeft": "30 - 12",
-   "outcome": "solved as erasures"
-  },
-  {
-   "damage": "one lost VBI line",
-   "unknownBits": "16",
-   "candidates": "1",
-   "checksumLeft": "16",
-   "outcome": "solved as erasures"
-  },
-  {
-   "damage": "one flipped bit the slicer was sure of",
-   "unknownBits": "1",
-   "candidates": "2^10.6",
-   "checksumLeft": "21",
-   "outcome": "searched"
-  },
-  {
-   "damage": "two flipped bits",
-   "unknownBits": "2",
-   "candidates": "2^20.3",
-   "checksumLeft": "12",
-   "outcome": "searched"
-  },
-  {
-   "damage": "two lost VBI lines",
-   "unknownBits": "32",
-   "candidates": "1",
-   "checksumLeft": "0",
-   "outcome": "refused"
-  },
-  {
-   "damage": "damage the confidence did not point at",
-   "unknownBits": "-",
-   "candidates": "-",
-   "checksumLeft": "-",
-   "outcome": "refused"
+   "value": "crc(the whole packet, its own trailer included) == 0"
   }
  ],
  "commands": [
@@ -144,1655 +75,1288 @@
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 0,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 1,
    "name": "Time",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 2,
    "name": "Daylight Saving Change",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 3,
    "name": "Region",
    "lengthBytes": 2,
    "headerBytes": 10,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 4,
    "name": "Channel Data",
    "lengthBytes": 1,
    "headerBytes": 5,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 5,
    "name": "Show List",
    "lengthBytes": 2,
    "headerBytes": 11,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 6,
    "name": "Show Title",
    "lengthBytes": 1,
    "headerBytes": 5,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 7,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 8,
    "name": "Show Description",
    "lengthBytes": 1,
    "headerBytes": 5,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 9,
-   "name": null,
+   "name": "Region Name",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 10,
-   "name": null,
+   "name": "Cycle Start",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 11,
    "name": "Theme Category",
    "lengthBytes": 2,
    "headerBytes": 5,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 12,
    "name": "Theme Sub-Category",
    "lengthBytes": 2,
    "headerBytes": 5,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 13,
    "name": "Subscriber Reset",
    "lengthBytes": 1,
    "headerBytes": 8,
-   "loader": "implemented",
-   "decoded": true,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 14,
    "name": "Authorization",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 15,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 16,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 17,
    "name": "Key Distribution",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 18,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 19,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 20,
    "name": "Sequence Number",
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "stub",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 21,
    "name": "Station Node Status",
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "stub",
-   "decoded": true,
-   "seen": true,
-   "provenance": "measured"
+   "decoded": true
   },
   {
    "type": 22,
    "name": "Long Assign IR Codes",
    "lengthBytes": 2,
    "headerBytes": 12,
-   "loader": "stub",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 23,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 24,
    "name": "Subscriber Unit",
    "lengthBytes": 2,
    "headerBytes": 9,
-   "loader": "stub",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 25,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 26,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 27,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 28,
    "name": null,
    "lengthBytes": 1,
    "headerBytes": 2,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 29,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 30,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 31,
-   "name": null,
+   "name": "Postal Code",
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 32,
-   "name": null,
+   "name": "News Service",
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "stub",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 33,
-   "name": null,
+   "name": "News Menu",
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "stub",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 34,
-   "name": null,
+   "name": "News Page",
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "stub",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 35,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "stub",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 36,
-   "name": null,
+   "name": "Segmented Command",
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 37,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 38,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 39,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 40,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 41,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 42,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "implemented",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": true
   },
   {
    "type": 43,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 44,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 45,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 46,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 47,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 48,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 49,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 50,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 51,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 52,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 53,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 54,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 55,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 56,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 57,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 58,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 59,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 60,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 61,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 62,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   },
   {
    "type": 63,
    "name": null,
    "lengthBytes": 2,
    "headerBytes": 3,
-   "loader": "none",
-   "decoded": false,
-   "seen": false,
-   "provenance": "loader"
+   "decoded": false
   }
  ],
  "commandLayouts": [
   {
    "name": "Time",
    "type": 1,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "measured"
+     "field": "length"
     },
     {
      "at": "2-5",
-     "field": "minute count, MSB first",
-     "provenance": "measured"
+     "field": "the time, to the minute"
     },
     {
      "at": "6",
-     "field": "zone and daylight saving flags",
-     "provenance": "measured"
+     "field": "zone and daylight saving flags"
     },
     {
      "at": "7",
-     "field": "seconds",
-     "provenance": "measured"
+     "field": "seconds"
     }
    ]
   },
   {
    "name": "Daylight Saving Change",
    "type": 2,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "measured"
+     "field": "length"
     },
     {
      "at": "2-5",
-     "field": "daylight saving starts",
-     "provenance": "measured"
+     "field": "daylight saving starts"
     },
     {
      "at": "6-9",
-     "field": "daylight saving ends",
-     "provenance": "measured"
+     "field": "daylight saving ends"
     }
    ]
   },
   {
    "name": "Region",
    "type": 3,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "3-4",
-     "field": "region id",
-     "provenance": "loader"
+     "field": "region id"
     },
     {
      "at": "5",
-     "field": "flags",
-     "provenance": "loader"
+     "field": "flags"
     },
     {
      "at": "6-9",
-     "field": "effective from, same epoch as Time",
-     "provenance": "loader"
+     "field": "the time the lineup takes effect"
     },
     {
      "at": "10",
-     "field": "channel count, so a lineup is at most 255",
-     "provenance": "loader"
+     "field": "channel count, so a lineup holds at most 255"
     },
     {
      "at": "11.. +0",
-     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7",
-     "provenance": "loader"
+     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7"
     },
     {
      "at": "11.. +1",
-     "field": "channel id low 8 (15 bits with the byte before)",
-     "provenance": "loader"
+     "field": "channel id low 8 (15 bits with the byte before)"
     },
     {
      "at": "11.. +2",
-     "field": "channel number low 8 (9 bits with the byte before)",
-     "provenance": "loader"
+     "field": "channel number low 8 (9 bits with the byte before): the number the channel sits on in this region"
     },
     {
      "at": "11.. +3",
-     "field": "never read by the loader",
-     "provenance": "loader"
+     "field": "the tier, and two bits of unknown meaning"
     }
    ]
   },
   {
    "name": "Channel Data",
    "type": 4,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length, 16"
+    },
+    {
+     "at": "2",
+     "field": "unknown"
     },
     {
      "at": "3",
-     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7",
-     "provenance": "loader"
+     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7"
     },
     {
      "at": "4",
-     "field": "channel id low 8 (15 bits with byte 3)",
-     "provenance": "loader"
+     "field": "channel id low 8 (15 bits with byte 3)"
     },
     {
      "at": "5",
-     "field": "flags",
-     "provenance": "loader"
+     "field": "flags"
     },
     {
      "at": "6",
-     "field": "channel number low 8 (9 bits with byte 3)",
-     "provenance": "loader"
+     "field": "channel number low 8 (9 bits with byte 3): the channel a station broadcasts on, zero for a cable service"
     },
     {
      "at": "7",
-     "field": "which of bytes 8-15 make the short label",
-     "provenance": "loader"
+     "field": "which of bytes 8-15 make the short label"
     },
     {
      "at": "8-15",
-     "field": "one string, CALL-NET: call letters, a dash, the network",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 9",
-   "type": 9,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "2-3",
-     "field": "an id",
-     "provenance": "loader"
-    },
-    {
-     "at": "4..",
-     "field": "payload, to the length in byte 1",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 10",
-   "type": 10,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0-8",
-     "field": "nine bytes the loader passes to the host application without reading them",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 31",
-   "type": 31,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "3-8",
-     "field": "a six byte key; the loader ignores the command unless it matches the one it holds",
-     "provenance": "loader"
-    },
-    {
-     "at": "10",
-     "field": "first table entry count",
-     "provenance": "loader"
-    },
-    {
-     "at": "11",
-     "field": "second table entry count",
-     "provenance": "loader"
-    },
-    {
-     "at": "12..",
-     "field": "that many two byte entries, then the second table, then two more bytes",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 36",
-   "type": 36,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "3",
-     "field": "high nibble: which part this is",
-     "provenance": "loader"
-    },
-    {
-     "at": "4",
-     "field": "which message the parts belong to",
-     "provenance": "loader"
-    },
-    {
-     "at": "5..",
-     "field": "that part of it",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 37",
-   "type": 37,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "3",
-     "field": "low nibble, a field",
-     "provenance": "loader"
-    },
-    {
-     "at": "4-5",
-     "field": "address count",
-     "provenance": "loader"
-    },
-    {
-     "at": "6..",
-     "field": "that many two byte addresses; the loader reads no further unless its own is among them",
-     "provenance": "loader"
-    },
-    {
-     "at": "after them",
-     "field": "the payload for the receivers named",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 38",
-   "type": 38,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "3-4",
-     "field": "an id",
-     "provenance": "loader"
-    },
-    {
-     "at": "5",
-     "field": "a byte the loader keeps",
-     "provenance": "loader"
-    },
-    {
-     "at": "6",
-     "field": "flags",
-     "provenance": "loader"
-    },
-    {
-     "at": "7",
-     "field": "low 3 bits: first length; upper bits: more flags",
-     "provenance": "loader"
-    },
-    {
-     "at": "8",
-     "field": "second length",
-     "provenance": "loader"
-    },
-    {
-     "at": "9",
-     "field": "third length",
-     "provenance": "loader"
-    },
-    {
-     "at": "10-11",
-     "field": "a second 16 bit value",
-     "provenance": "loader"
-    },
-    {
-     "at": "12..",
-     "field": "the three payloads, one after another",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 39",
-   "type": 39,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "3-4",
-     "field": "an id",
-     "provenance": "loader"
-    },
-    {
-     "at": "5-6",
-     "field": "a 16 bit value",
-     "provenance": "loader"
-    },
-    {
-     "at": "7-10",
-     "field": "a 32 bit value",
-     "provenance": "loader"
-    },
-    {
-     "at": "11",
-     "field": "a byte",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 40",
-   "type": 40,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "3-4",
-     "field": "an id",
-     "provenance": "loader"
-    },
-    {
-     "at": "5",
-     "field": "a byte the loader keeps",
-     "provenance": "loader"
-    },
-    {
-     "at": "6..",
-     "field": "payload, to the length in bytes 1-2",
-     "provenance": "loader"
-    }
-   ]
-  },
-  {
-   "name": "type 42",
-   "type": 42,
-   "provenance": "loader",
-   "bytes": [
-    {
-     "at": "0",
-     "field": "type",
-     "provenance": "loader"
-    },
-    {
-     "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
-    },
-    {
-     "at": "8",
-     "field": "bits 4-5: set a flag, clear it, or neither",
-     "provenance": "loader"
+     "field": "a station's CALL-NET - call letters, a dash, the network - or a cable service's name, which can carry a dash of its own: SCI-FI, CNN-HLN, DSC-KIDS"
     }
    ]
   },
   {
    "name": "Show List",
    "type": 5,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type and the encryption bits; an encrypted list keeps bytes 0-10 in the clear"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "measured"
+     "field": "length"
     },
     {
      "at": "3",
-     "field": "low nibble, meaning unknown",
-     "provenance": "measured"
+     "field": "low nibble: a version. A receiver skips a list for a channel and day it already holds at it, and a revised day comes with a higher one"
     },
     {
      "at": "4-5",
-     "field": "channel id, 15 bits (0x7FFF)",
-     "provenance": "measured"
+     "field": "channel id, 15 bits (0x7FFF)"
     },
     {
      "at": "6-9",
-     "field": "start of the first slot",
-     "provenance": "measured"
+     "field": "start of the first slot, a GMT midnight"
     },
     {
      "at": "10",
-     "field": "slot count",
-     "provenance": "measured"
+     "field": "slot count"
     },
     {
      "at": "11..",
-     "field": "slots: flags, minutes, show id, then the optional fields",
-     "provenance": "measured"
+     "field": "slots: flags, minutes, show id, then the optional fields"
     }
    ]
   },
   {
    "name": "Show Title",
    "type": 6,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "measured"
+     "field": "length"
     },
     {
      "at": "2",
-     "field": "flags",
-     "provenance": "measured"
+     "field": "flags"
     },
     {
      "at": "3-4",
-     "field": "show id",
-     "provenance": "measured"
+     "field": "show id"
     },
     {
      "at": "5-6",
-     "field": "theme id",
-     "provenance": "measured"
+     "field": "theme id"
     },
     {
      "at": "7..",
-     "field": "title",
-     "provenance": "measured"
+     "field": "title"
     }
    ]
   },
   {
    "name": "Show Description",
    "type": 8,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "measured"
+     "field": "length"
     },
     {
      "at": "2",
-     "field": "flags",
-     "provenance": "measured"
+     "field": "flags"
     },
     {
      "at": "3-4",
-     "field": "description id",
-     "provenance": "measured"
+     "field": "description id"
     },
     {
      "at": "7",
-     "field": "rating system (bits 7-5), rating (bits 4-1), extended form only",
-     "provenance": "measured"
+     "field": "critic's stars (bits 7-5), film rating code (bits 4-1), extended form only. The codes are 0 NR, 1 G, 2 NC-17, 3 PG, 4 PG-13, 5 R, 6 NC-17, 7 NC-17"
     },
     {
      "at": "8",
-     "field": "content advisories, extended form only",
-     "provenance": "measured"
+     "field": "content advisories, extended form only"
     },
     {
      "at": "9",
-     "field": "year, last two digits, extended form only",
-     "provenance": "measured"
+     "field": "year, last two digits, zero for none; extended form only"
     },
     {
      "at": "7.. or 10..",
-     "field": "text, after the extended bytes when present",
-     "provenance": "measured"
+     "field": "text, after the extended bytes when present"
     }
    ]
   },
   {
-   "name": "type 9",
+   "name": "Region Name",
    "type": 9,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "2-3",
-     "field": "a 16 bit id",
-     "provenance": "loader"
+     "field": "region id"
     },
     {
      "at": "4..",
-     "field": "payload of length - 4 bytes",
-     "provenance": "loader"
+     "field": "the name, always compressed: 'columbus, oh', 'akron - time warner cable'"
     }
    ]
   },
   {
-   "name": "type 10",
+   "name": "Cycle Start",
    "type": 10,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length, 9"
     },
     {
-     "at": "2..",
-     "field": "nine bytes handed to a registered callback",
-     "provenance": "loader"
+     "at": "2-8",
+     "field": "unexplained. The command marks the start of a carousel cycle; a receiver scanning for the guide counts them"
     }
    ]
   },
   {
    "name": "Theme Category",
    "type": 11,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "3",
-     "field": "version; a change makes the loader reload every name",
-     "provenance": "loader"
+     "field": "version; a change means every name is to be reloaded"
     },
     {
      "at": "4",
-     "field": "entry count",
-     "provenance": "loader"
+     "field": "entry count"
     },
     {
      "at": "5..",
-     "field": "entries of: id, flags, length, then a NUL terminated name",
-     "provenance": "loader"
+     "field": "entries of: id, flags, length, then a NUL terminated name: 1 Movies to 11 Miscellaneous. The flag byte's meaning is unknown"
     }
    ]
   },
   {
    "name": "Theme Sub-Category",
    "type": 12,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "3",
-     "field": "version",
-     "provenance": "loader"
+     "field": "the Theme Category id these belong to"
     },
     {
      "at": "4",
-     "field": "entry count, low 7 bits",
-     "provenance": "loader"
+     "field": "entry count, low 7 bits"
     },
     {
      "at": "5..",
-     "field": "entries, as Theme Category",
-     "provenance": "loader"
+     "field": "entries of: their own length, flags, a count of theme ids, the ids, then the name. They are the receiver's search menus: each category opens with an 'All' list and closes with a 'Closed Captioned' one, and one theme sits in as many as fit it. The flag byte's meaning is unknown"
     }
    ]
   },
   {
    "name": "Subscriber Reset",
    "type": 13,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "2",
-     "field": "which state to discard",
-     "provenance": "loader"
+     "field": "what to discard"
     },
     {
-     "at": "3..",
-     "field": "payload",
-     "provenance": "loader"
+     "at": "3-7",
+     "field": "the receiver it is for; zero for every receiver"
+    }
+   ]
+  },
+  {
+   "name": "Authorization",
+   "type": 14,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "the receiver it is for"
+    },
+    {
+     "at": "6..",
+     "field": "opaque"
+    }
+   ]
+  },
+  {
+   "name": "Key Distribution",
+   "type": 17,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "the receiver it is for; sent in rising order"
+    },
+    {
+     "at": "6..",
+     "field": "opaque"
     }
    ]
   },
   {
    "name": "Sequence Number",
    "type": 20,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type"
     },
     {
      "at": "1",
-     "field": "length",
-     "provenance": "measured"
+     "field": "length"
     },
     {
      "at": "2-5",
-     "field": "a 32 bit counter, one per packet",
-     "provenance": "measured"
+     "field": "a 32 bit counter, one per packet"
     }
    ]
   },
   {
    "name": "Station Node Status",
    "type": 21,
-   "provenance": "measured",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "measured"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length, always 733",
-     "provenance": "measured"
+     "field": "length: growing in layout 1; 721 to 743 bytes in layouts 3 and 4"
     },
     {
      "at": "3",
-     "field": "which layout this is. The 1994 KCET capture sends 1 and the 1998 KET tapes send 3, and the fields after byte 20 sit in different places in each",
-     "provenance": "measured"
+     "field": "layout: 1, 3 or 4. Layout 1 places its fields after byte 20 differently"
     },
     {
      "at": "4-5",
-     "field": "a constant, 500 on KCET and 405 on KET",
-     "provenance": "measured"
+     "field": "in layouts 3 and 4, a software release: 200, 403 and 405 are known"
     },
     {
      "at": "6-7",
-     "field": "a constant, 5 on KCET and 52 on KET",
-     "provenance": "measured"
+     "field": "the stream id the packet headers carry"
     },
     {
      "at": "8-11",
-     "field": "a Unix time, constant within a capture and earlier than the one after it",
-     "provenance": "measured"
+     "field": "a Unix time, constant over a session"
     },
     {
      "at": "12-15",
-     "field": "when the block was assembled, Unix seconds; constant within a capture",
-     "provenance": "measured"
+     "field": "when the block's contents were assembled, Unix seconds; unset in layout 4"
     },
     {
      "at": "20-23",
-     "field": "0x12CEA600 in every instance of both stations, four years and a continent apart. Unexplained, and the only value in the block that is",
-     "provenance": "measured"
+     "field": "a Unix time, or 0x12CEA600 - 1980-01-01, the zero of a DOS clock - where nothing set it, as every unset time in the block is"
     },
     {
-     "at": "varies",
-     "field": "the station clock at the moment of sending, Unix seconds. Not at a fixed offset - 48 in layout 3 and 58 in layout 1 - so it is found as the one field past the assembly time that reads as a time shortly after it",
-     "provenance": "measured"
+     "at": "58 (layout 1), 48 (layout 3), 48 (layout 4)",
+     "field": "the station clock when the block was sent, Unix seconds"
     },
     {
      "at": "38-39, 50-51, 40-41 (layout 1)",
-     "field": "how far through its cycle the station is: a total, how many are done and how many are left. They hold to the byte across all twelve instances of the 1994 capture - 487 in all, 33 more done every ten minutes - and no three fields anywhere in layout 3 hold the same identity, so they are read only when they agree",
-     "provenance": "measured"
+     "field": "how far through its cycle the station is: a total, how many are done and how many remain, the last two adding up to the first"
     },
     {
      "at": "66-67 (layout 1)",
-     "field": "the minutes between the assembly time and the clock. Exact on all twelve, and so carries nothing the other two fields do not",
-     "provenance": "measured"
+     "field": "minutes since the assembly time. The block grows by two bytes for every eight"
     },
     {
      "at": "the rest of layout 1",
-     "field": "zero. The block grows two bytes every instance and the added bytes are padding, so something is counted that this capture never fills in",
-     "provenance": "measured"
+     "field": "zero"
     },
     {
-     "at": "the rest of layout 3",
-     "field": "669 bytes, two thirds of them zero and 93 to 95 per cent of them identical from one instance to the next ten minutes later, in place - aligning the two at any other offset fits worse, so nothing slides. What does change is 7 to 9 per cent of it, in short runs which are most often pairs two bytes apart, so what is being updated is 16 bit fields scattered through a table that is otherwise static. Six instances over two captures is not enough to say what they count",
-     "provenance": "measured"
+     "at": "56-57 (layouts 3 and 4)",
+     "field": "how many bits of each minute map are in use, 1433 to 1440: it gains one a minute, and when it would pass 1440 both maps turn a byte to the left and it drops by eight, so the bit before it is the current minute"
+    },
+    {
+     "at": "58-237, 238-417",
+     "field": "two maps of the last day, a bit a minute, the first bit the most significant. What a set bit means is unknown"
+    },
+    {
+     "at": "420-429 (layout 4)",
+     "field": "an unset time and six zero bytes, which layout 4 inserts, so everything after them sits 10 bytes later than in layout 3"
+    },
+    {
+     "at": "432-459",
+     "field": "the station's inventory of its own guide: how many it holds of each of 14 tables - regions, channels, titles, descriptions, then the schedules of 10 days from the GMT day of its clock, each counting channels"
+    },
+    {
+     "at": "460-461",
+     "field": "the stream id again"
+    },
+    {
+     "at": "462",
+     "field": "the number of tables, 14"
+    },
+    {
+     "at": "463-714",
+     "field": "a 18 byte record a table of what the station lacks: a count, then the lowest eight missing ids, ascending, zero where there are fewer"
+    },
+    {
+     "at": "721-724",
+     "field": "from software 403 on, a time at the same local time every day, always the latest one before the clock"
+    },
+    {
+     "at": "the rest of layouts 3 and 4",
+     "field": "unknown: times at 20-27 and 420-431, a running counter at 30-33, constants at 28-29 and 38-39, values at 40-47, and short counts at 715-732"
     }
    ]
   },
   {
-   "name": "type 31",
+   "name": "Postal Code",
    "type": 31,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
+    },
+    {
+     "at": "3-8",
+     "field": "the postal code as text; codes are sent in sort order"
+    },
+    {
+     "at": "9",
+     "field": "unknown"
     },
     {
      "at": "10",
-     "field": "a count",
-     "provenance": "loader"
+     "field": "antenna region count"
     },
     {
      "at": "11",
-     "field": "a second count",
-     "provenance": "loader"
+     "field": "cable region count"
     },
     {
      "at": "12..",
-     "field": "two arrays of 16 bit values, sized by those counts",
-     "provenance": "loader"
+     "field": "that many two byte region ids, then the cable ones"
+    },
+    {
+     "at": "then",
+     "field": "the news area its pages are filed under, then a byte of unknown meaning"
     }
    ]
   },
   {
-   "name": "type 36",
-   "type": 36,
-   "provenance": "loader",
+   "name": "News Service",
+   "type": 32,
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
+    },
+    {
+     "at": "3-6",
+     "field": "unknown"
+    },
+    {
+     "at": "7",
+     "field": "name length"
+    },
+    {
+     "at": "8..",
+     "field": "the name, usually in the clear: 'StarSight NEWS Services'"
+    }
+   ]
+  },
+  {
+   "name": "News Menu",
+   "type": 33,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
     },
     {
      "at": "3",
-     "field": "a byte",
-     "provenance": "loader"
+     "field": "unknown"
     },
     {
      "at": "4",
-     "field": "entry count",
-     "provenance": "loader"
+     "field": "section count"
     },
     {
      "at": "5..",
-     "field": "entries",
-     "provenance": "loader"
+     "field": "sections of: number, five unknown bytes, name length, the name compressed"
+    }
+   ]
+  },
+  {
+   "name": "News Page",
+   "type": 34,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "the menu section it is under"
+    },
+    {
+     "at": "4",
+     "field": "unknown"
+    },
+    {
+     "at": "5-6",
+     "field": "page number"
+    },
+    {
+     "at": "7",
+     "field": "flags"
+    },
+    {
+     "at": "8-9",
+     "field": "unknown"
+    },
+    {
+     "at": "10",
+     "field": "the news area of the postal codes it is for; zero for every area"
+    },
+    {
+     "at": "11-14",
+     "field": "when it was written"
+    },
+    {
+     "at": "15",
+     "field": "unknown"
+    },
+    {
+     "at": "16",
+     "field": "title length"
+    },
+    {
+     "at": "17..",
+     "field": "the title, compressed"
+    },
+    {
+     "at": "then",
+     "field": "text length, sixteen bits; 0x8000 set when the text is in the clear"
+    },
+    {
+     "at": "then",
+     "field": "the text: compressed, it breaks lines with the 0x1F phrase, 'ur' everywhere else; in the clear, with CR. `i, `a and `d set text apart up to `e or the end of the line"
+    }
+   ]
+  },
+  {
+   "name": "Segmented Command",
+   "type": 36,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "high nibble: this part; low nibble: the last part"
+    },
+    {
+     "at": "4",
+     "field": "which message the parts belong to"
+    },
+    {
+     "at": "5..",
+     "field": "that part of a command. Joined in order, the parts end with a CRC-32 over the whole, at most 3000 bytes"
     }
    ]
   },
   {
    "name": "type 37",
    "type": 37,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "3",
-     "field": "a byte",
-     "provenance": "loader"
+     "field": "low nibble: a version; a day already held at it is skipped"
     },
     {
      "at": "4-5",
-     "field": "entry count",
-     "provenance": "loader"
+     "field": "region count"
     },
     {
      "at": "6..",
-     "field": "entries of 16 bit fields",
-     "provenance": "loader"
+     "field": "that many region ids: the regions it is for"
+    },
+    {
+     "at": "after them",
+     "field": "a midnight, one of the next seven"
+    },
+    {
+     "at": "then",
+     "field": "an entry count, and that many entries of a byte and a 16 bit value"
     }
    ]
   },
   {
    "name": "type 38",
    "type": 38,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
+    },
+    {
+     "at": "3-4",
+     "field": "an id"
+    },
+    {
+     "at": "5",
+     "field": "a byte"
+    },
+    {
+     "at": "6",
+     "field": "flags"
     },
     {
      "at": "7",
-     "field": "a byte",
-     "provenance": "loader"
+     "field": "low 3 bits: first length; upper bits: more flags"
     },
     {
      "at": "8",
-     "field": "a byte",
-     "provenance": "loader"
+     "field": "second length"
     },
     {
      "at": "9",
-     "field": "a byte",
-     "provenance": "loader"
+     "field": "third length"
+    },
+    {
+     "at": "10-11",
+     "field": "a 16 bit value"
+    },
+    {
+     "at": "12..",
+     "field": "the three payloads, one after another"
     }
    ]
   },
   {
    "name": "type 39",
    "type": 39,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
-     "at": "5-10",
-     "field": "a multi byte value assembled MSB first",
-     "provenance": "loader"
+     "at": "3-4",
+     "field": "an id"
+    },
+    {
+     "at": "5-6",
+     "field": "a 16 bit value"
+    },
+    {
+     "at": "7-10",
+     "field": "a 32 bit value"
+    },
+    {
+     "at": "11",
+     "field": "a byte"
     }
    ]
   },
   {
    "name": "type 40",
    "type": 40,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "3-4",
-     "field": "a 16 bit field",
-     "provenance": "loader"
+     "field": "an id"
     },
     {
-     "at": "5..",
-     "field": "records of six bytes",
-     "provenance": "loader"
+     "at": "5",
+     "field": "a byte"
+    },
+    {
+     "at": "6..",
+     "field": "payload, to the length in bytes 1-2"
     }
    ]
   },
   {
    "name": "type 42",
    "type": 42,
-   "provenance": "loader",
    "bytes": [
     {
      "at": "0",
-     "field": "type",
-     "provenance": "loader"
+     "field": "type"
     },
     {
      "at": "1-2",
-     "field": "length",
-     "provenance": "loader"
+     "field": "length"
     },
     {
      "at": "8",
-     "field": "a byte",
-     "provenance": "loader"
+     "field": "bits 4-5: 0 stops a receiver acting on Region, Channel Data, Show List, the theme commands and types 36 and 37; 1 lets it act on them again; 2 and 3 do nothing"
+    },
+    {
+     "at": "3-25",
+     "field": "otherwise unexplained"
     }
    ]
   }
@@ -1804,14 +1368,17 @@
     {
      "mask": 63,
      "field": "type",
-     "note": "The command type; the loader dispatches on exactly these six bits.",
-     "provenance": "measured"
+     "note": "The command type."
     },
     {
-     "mask": 192,
-     "field": "enc_flg | key_id",
-     "note": "Encryption flag and key id. Zero in every capture.",
-     "provenance": "patent"
+     "mask": 128,
+     "field": "encrypted",
+     "note": "The command is encrypted. An encrypted Show List keeps bytes 0-10 - version, channel, start and slot count - in the clear and enciphers its slots."
+    },
+    {
+     "mask": 64,
+     "field": "key",
+     "note": "Which of two keys enciphered it."
     }
    ]
   },
@@ -1821,32 +1388,27 @@
     {
      "mask": 128,
      "field": "compressed",
-     "note": "The title is Huffman coded.",
-     "provenance": "measured"
+     "note": "The title is compressed."
     },
     {
      "mask": 64,
      "field": "closedCaptioned",
-     "note": "Loader column 'TS Closed Caption'.",
-     "provenance": "measured"
+     "note": "The program is closed captioned."
     },
     {
      "mask": 32,
      "field": "stereo",
-     "note": "Loader column 'TS Stereo'.",
-     "provenance": "measured"
+     "note": "The program is in stereo."
     },
     {
      "mask": 16,
      "field": "blackAndWhite",
-     "note": "Loader broadcast property 'B/W'.",
-     "provenance": "measured"
+     "note": "The program is in black and white."
     },
     {
      "mask": 15,
      "field": "unused",
-     "note": "Zero on all 11,161 titles; no part of the show id.",
-     "provenance": "measured"
+     "note": "Unused; no part of the show id."
     }
    ]
   },
@@ -1856,14 +1418,27 @@
     {
      "mask": 128,
      "field": "compressed",
-     "note": "The text is Huffman coded.",
-     "provenance": "measured"
+     "note": "The text is compressed."
+    },
+    {
+     "mask": 64,
+     "field": "closedCaptioned",
+     "note": "The program described is closed captioned, as its Show Title says."
+    },
+    {
+     "mask": 32,
+     "field": "stereo",
+     "note": "The program described is in stereo."
+    },
+    {
+     "mask": 16,
+     "field": "blackAndWhite",
+     "note": "The program described is in black and white."
     },
     {
      "mask": 8,
      "field": "extended",
-     "note": "Rating, advisories and year precede the text, which then starts at byte 10.",
-     "provenance": "measured"
+     "note": "Rating, advisories and year precede the text, which then starts at byte 10."
     }
    ]
   },
@@ -1873,32 +1448,27 @@
     {
      "mask": 128,
      "field": "hasDescription",
-     "note": "Two more bytes: a description id.",
-     "provenance": "measured"
+     "note": "Two more bytes follow: a description id."
     },
     {
      "mask": 64,
      "field": "payPerView",
-     "note": "Reaches the database as 'TS Pay Per View'.",
-     "provenance": "measured"
+     "note": "Pay per view."
     },
     {
      "mask": 32,
      "field": "hasShowGroup",
-     "note": "Two more bytes: a show group.",
-     "provenance": "measured"
+     "note": "Two more bytes follow: a show group."
     },
     {
      "mask": 30,
-     "field": "unnamed",
-     "note": "Bits 1-4. The loader reads none of them and they are set on two slots in 43,430, both on commands with other damage.",
-     "provenance": "measured"
+     "field": "unused",
+     "note": "Unused."
     },
     {
      "mask": 1,
      "field": "joinedInProgress",
-     "note": "On a list's first slot, a programme already running.",
-     "provenance": "measured"
+     "note": "On a list's first slot: the program was already running when the list starts."
     }
    ]
   },
@@ -1908,32 +1478,42 @@
     {
      "mask": 2,
      "field": "nudity",
-     "note": "Set when the programme carries this advisory.",
-     "provenance": "measured"
+     "note": "The program carries this advisory."
     },
     {
      "mask": 4,
      "field": "violence",
-     "note": "Set when the programme carries this advisory.",
-     "provenance": "measured"
+     "note": "The program carries this advisory."
     },
     {
      "mask": 8,
      "field": "adult situations",
-     "note": "Set when the programme carries this advisory.",
-     "provenance": "measured"
+     "note": "The program carries this advisory."
     },
     {
      "mask": 16,
      "field": "adult themes",
-     "note": "Set when the programme carries this advisory.",
-     "provenance": "measured"
+     "note": "The program carries this advisory."
     },
     {
      "mask": 128,
      "field": "adult language",
-     "note": "Set when the programme carries this advisory.",
-     "provenance": "measured"
+     "note": "The program carries this advisory."
+    },
+    {
+     "mask": 1,
+     "field": "unknown bit 0",
+     "note": "Unknown."
+    },
+    {
+     "mask": 32,
+     "field": "unknown bit 5",
+     "note": "Unknown."
+    },
+    {
+     "mask": 64,
+     "field": "unknown bit 6",
+     "note": "Unknown."
     }
    ]
   },
@@ -1943,20 +1523,22 @@
     {
      "mask": 15,
      "field": "utcOffsetHours",
-     "note": "The station's standard offset from GMT, whole hours.",
-     "provenance": "measured"
+     "note": "The station's standard offset from GMT, whole hours."
     },
     {
      "mask": 16,
      "field": "offsetIsNegative",
-     "note": "Makes the offset west of Greenwich.",
-     "provenance": "measured"
+     "note": "The offset is west of Greenwich."
+    },
+    {
+     "mask": 64,
+     "field": "notAProvider",
+     "note": "This channel is not a StarSight provider: a receiver scanning for the guide passes it over."
     },
     {
      "mask": 128,
      "field": "daylightSaving",
-     "note": "The wall clock is an hour ahead of the offset.",
-     "provenance": "measured"
+     "note": "Daylight saving is in force: the wall clock is an hour ahead of the offset."
     }
    ]
   },
@@ -1966,8 +1548,7 @@
     {
      "mask": 2,
      "field": "showsCallSign",
-     "note": "Display the call sign rather than the channel number.",
-     "provenance": "loader"
+     "note": "A cable service, shown by its name rather than a channel number."
     }
    ]
   },
@@ -1977,8 +1558,7 @@
     {
      "mask": 255,
      "field": "short label",
-     "note": "Read from 0x80 down, one bit per character at 8-15; the selected characters make a 4 character label for a display too narrow for the whole call sign.",
-     "provenance": "loader"
+     "note": "Read from 0x80 down, one bit per character of bytes 8-15: the characters selected make a 4 character label for a display too narrow for the whole name. HEADLINE with 0x9A gives HDLN, CINEMAX with 0x0E gives MAX. Zero for a station."
     }
    ]
   },
@@ -1986,10 +1566,29 @@
    "byte": "Region byte 5",
    "bits": [
     {
+     "mask": 32,
+     "field": "cable",
+     "note": "A cable system's lineup rather than an antenna's."
+    },
+    {
      "mask": 1,
      "field": "applyNow",
-     "note": "Use this lineup at once. Otherwise the loader holds the command and replays it when the stream clock reaches the effective time.",
-     "provenance": "loader"
+     "note": "Use this lineup at once. Otherwise it waits until the stream's clock reaches its effective time."
+    }
+   ]
+  },
+  {
+   "byte": "Region lineup entry byte 3",
+   "bits": [
+    {
+     "mask": 3,
+     "field": "tier",
+     "note": "The tier a cable system sells the channel in: 0 basic, 1 extended, 2 premium, 3 pay per view."
+    },
+    {
+     "mask": 192,
+     "field": "unknown",
+     "note": "Unknown."
     }
    ]
   },
@@ -1999,14 +1598,12 @@
     {
      "mask": 1,
      "field": "clear stored guide",
-     "note": "The loader calls a different routine for each bit.",
-     "provenance": "loader"
+     "note": "Clear the stored lineup, schedules and themes."
     },
     {
      "mask": 2,
-     "field": "clear stored settings",
-     "note": "The loader calls a different routine for each bit.",
-     "provenance": "loader"
+     "field": "clear stored guide and stop loading",
+     "note": "Clear them, and stop loading the guide until restarted."
     }
    ]
   }
@@ -2524,203 +2121,5 @@
     "symbol": "%"
    }
   ]
- },
- "database": [
-  {
-   "table": "BroadcastProperty",
-   "columns": [
-    "BP Broadcast Property ID",
-    "BP Tuning Space",
-    "BP Abbreviation",
-    "BP Name",
-    "BP Display Order",
-    "BP Pictogram Moniker"
-   ]
-  },
-  {
-   "table": "ChannelT",
-   "columns": [
-    "C Channel ID",
-    "C Tuning Space",
-    "C Channel Number",
-    "C Start Time",
-    "C End Time",
-    "C Length",
-    "C Station ID",
-    "C Description",
-    "C Enhancement Mapping ID",
-    "C Rating ID",
-    "C Display Mask",
-    "C Payment Address",
-    "C Payment Token",
-    "C Last Update",
-    "C Tunable"
-   ]
-  },
-  {
-   "table": "ChannelStream",
-   "columns": [
-    "CSR Channel ID",
-    "CSR Stream Type ID",
-    "CSR SubChannel",
-    "CSR Name"
-   ]
-  },
-  {
-   "table": "ChannelProperty",
-   "columns": [
-    "CP Channel ID",
-    "CP Broadcast Property ID"
-   ]
-  },
-  {
-   "table": "EpisodeT",
-   "columns": [
-    "E Episode ID",
-    "E Title",
-    "E Description",
-    "E Enhancement Mapping ID",
-    "E Display Mask",
-    "E Theme ID",
-    "E Rating ID",
-    "E Abbreviation",
-    "E Last Update"
-   ]
-  },
-  {
-   "table": "Enhancement",
-   "columns": [
-    "EN Enhancement ID",
-    "EN Mapping ID",
-    "EN Title",
-    "EN Show Reference",
-    "EN Preload URL",
-    "EN Address",
-    "EN Expire Date"
-   ]
-  },
-  {
-   "table": "EpisodeProperty",
-   "columns": [
-    "EP Episode ID",
-    "EP Broadcast Property ID"
-   ]
-  },
-  {
-   "table": "Genre",
-   "columns": [
-    "G Genre ID",
-    "G Tuning Space",
-    "G Name"
-   ]
-  },
-  {
-   "table": "Network",
-   "columns": [
-    "N Network ID",
-    "N Name",
-    "N LogoMoniker"
-   ]
-  },
-  {
-   "table": "Rating",
-   "columns": [
-    "R Rating ID",
-    "R Rating System ID",
-    "R Rating",
-    "R Description",
-    "R Pictogram Moniker"
-   ]
-  },
-  {
-   "table": "Rating System",
-   "columns": [
-    "RS Rating System ID",
-    "RS Tuning Space",
-    "RS Name",
-    "RS Description"
-   ]
-  },
-  {
-   "table": "Station",
-   "columns": [
-    "S Station ID",
-    "S Call Letters",
-    "S Name",
-    "S Network ID",
-    "S Logo",
-    "S Description"
-   ]
-  },
-  {
-   "table": "StreamType",
-   "columns": [
-    "SR Stream Type ID",
-    "SR Tuning Space",
-    "SR Value",
-    "SR Description",
-    "SR Category",
-    "SR LocaleID"
-   ]
-  },
-  {
-   "table": "SubGenre",
-   "columns": [
-    "SG SubGenre ID",
-    "SG Name"
-   ]
-  },
-  {
-   "table": "Theme",
-   "columns": [
-    "T Theme ID",
-    "T Genre ID",
-    "T SubGenre ID"
-   ]
-  },
-  {
-   "table": "TimeSlot",
-   "columns": [
-    "TS Time Slot ID",
-    "TS Channel ID",
-    "TS Episode ID",
-    "TS Start Time",
-    "TS End Time",
-    "TS Length",
-    "TS Payment Address",
-    "TS Payment Token",
-    "TS Last Update",
-    "TS Pay Per View",
-    "TS Closed Caption",
-    "TS Stereo",
-    "TS Rerun",
-    "TS Tape Inhibited",
-    "TS Other Properties Exist",
-    "TS Alternate Data Exists",
-    "TS Alternate Audio Exists",
-    "TS Enhancement Mapping ID"
-   ]
-  },
-  {
-   "table": "TimeSlotEnhancements",
-   "columns": [
-    "TSE Time Slot ID",
-    "TSE Mapping ID"
-   ]
-  },
-  {
-   "table": "EpisodeEnhancements",
-   "columns": [
-    "EE Episode ID",
-    "EE Mapping ID"
-   ]
-  },
-  {
-   "table": "ChannelEnhancements",
-   "columns": [
-    "CE Channel ID",
-    "CE Mapping ID"
-   ]
-  }
- ]
+ }
 }
