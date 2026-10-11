@@ -1,0 +1,575 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>StarSight protocol</title>
+<style>
+:root{color-scheme:light dark;
+ --ink:#17181c;--ground:#fbfbf9;--rule:#d6d5cf;--zebra:#f5f4f0;--head:#efeee8;--dim:#5b5f68}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+ --ink:#e6e6e3;--ground:#16171a;--rule:#35383f;--zebra:#1d1f23;--head:#24262b;--dim:#a8abb3}}
+:root[data-theme="dark"]{
+ --ink:#e6e6e3;--ground:#16171a;--rule:#35383f;--zebra:#1d1f23;--head:#24262b;--dim:#a8abb3}
+*{box-sizing:border-box}
+body{font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:0;padding-block:2rem;
+ padding-inline:16px;color:var(--ink);background:var(--ground)}
+main{max-width:64rem;margin:0 auto}
+h1{font-size:1.5rem;margin:0 0 .25rem;text-wrap:balance}
+h2{font-size:1.1rem;margin:2.5rem 0 .25rem;text-wrap:balance}
+h3{font-size:.95rem;margin:1.5rem 0 .25rem;font-weight:600}
+p{margin:.25rem 0 1rem;max-width:44rem;color:var(--dim)}
+nav p{margin:0}
+table{border-collapse:collapse;margin:0 0 1rem;width:100%;display:block;overflow-x:auto}
+th,td{border:1px solid var(--rule);padding:.25rem .5rem;text-align:left;
+ vertical-align:top;white-space:normal}
+th{background:var(--head);font-weight:600;white-space:nowrap}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:nth-child(even) td{background:var(--zebra)}
+code{background:var(--head);padding:0 .2em}
+a{color:inherit}
+</style></head><body><main>
+<h1>The StarSight protocol</h1>
+<p>The byte-level reference for the StarSight Data Transmission Network, carried on a line of the NTSC vertical blanking interval, generated from <code>lib/starsight.py</code>. <code>docs/starsight.md</code> explains it, and <code>docs/research/starsight-sources.md</code> gives its sources.</p>
+<nav><p><a href='#packet'>Packet</a> &middot; <a href='#checksums'>Checksums</a> &middot; <a href='#commands'>Commands</a> &middot; <a href='#command-layouts'>Command layouts</a> &middot; <a href='#flag-bits'>Flag bits</a> &middot; <a href='#compression'>Compression</a></p></nav>
+<h2 id='packet'>Packet</h2>
+<p>Byte offsets from the sync. Every number is big endian except the two checks. Times are minutes since 1992-01-01 00:00 GMT.</p>
+<table><thead><tr><th>Offset</th><th>Bytes</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td class="num">0</td><td class="num">1</td><td>sync</td><td>Always 0x2C.</td></tr>
+<tr><td class="num">1</td><td class="num">2</td><td>size</td><td>The whole packet in bytes, this header and the trailer included, MSB first. At most 0x7F8.</td></tr>
+<tr><td class="num">3</td><td class="num">4</td><td>time</td><td>The minute the packet was sent: minutes since 1992-01-01 GMT, MSB first.</td></tr>
+<tr><td class="num">7</td><td class="num">2</td><td>stream</td><td>Stream id, naming the feed.</td></tr>
+<tr><td class="num">9</td><td class="num">2</td><td>header check</td><td>The low 16 bits of the CRC of bytes 0-8, least significant byte first.</td></tr>
+<tr><td class="num">11</td><td></td><td>commands</td><td>Concatenated commands, which fill it exactly.</td></tr>
+<tr><td></td><td class="num">4</td><td>body check</td><td>The CRC of everything before it, least significant byte first, so that the CRC of the whole packet is zero.</td></tr>
+</tbody></table>
+<h2 id='checksums'>Checksums</h2>
+<p>Both checks use one CRC: zlib's <code>crc32</code> with its result inverted. The missing final inversion is what makes the body check come out zero over the whole packet.</p>
+<table><thead><tr><th>Property</th><th>Value</th></tr></thead><tbody>
+<tr><td>algorithm</td><td>Table driven reflected CRC-32</td></tr>
+<tr><td>polynomial</td><td>0xEDB88320, the standard IEEE one</td></tr>
+<tr><td>initial value</td><td>0xFFFFFFFF</td></tr>
+<tr><td>final inversion</td><td>none - the register is returned as it stands</td></tr>
+<tr><td>header check</td><td>crc(bytes 0..8) &amp; 0xFFFF == bytes 9-10 read little endian</td></tr>
+<tr><td>body check</td><td>crc(the whole packet, its own trailer included) == 0</td></tr>
+</tbody></table>
+<h2 id='commands'>Commands</h2>
+<p>Indexed by <code>byte 0 &amp; 0x3F</code>. <b>Length</b> is how many bytes the length field after the type takes, and <b>header</b> how many bytes come before a command's variable part. <b>Decoded</b> says whether <code>cc_decoder</code> turns the type into records.</p>
+<table><thead><tr><th>Type</th><th>Name</th><th>Length</th><th>Header</th><th>Decoded</th></tr></thead><tbody>
+<tr><td class="num">0</td><td></td><td class="num">1</td><td class="num">0</td><td>no</td></tr>
+<tr><td class="num">1</td><td>Time</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">2</td><td>Daylight Saving Change</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">3</td><td>Region</td><td class="num">2</td><td class="num">10</td><td>yes</td></tr>
+<tr><td class="num">4</td><td>Channel Data</td><td class="num">1</td><td class="num">5</td><td>yes</td></tr>
+<tr><td class="num">5</td><td>Show List</td><td class="num">2</td><td class="num">11</td><td>yes</td></tr>
+<tr><td class="num">6</td><td>Show Title</td><td class="num">1</td><td class="num">5</td><td>yes</td></tr>
+<tr><td class="num">7</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">8</td><td>Show Description</td><td class="num">1</td><td class="num">5</td><td>yes</td></tr>
+<tr><td class="num">9</td><td>Region Name</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">10</td><td>Cycle Start</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">11</td><td>Theme Category</td><td class="num">2</td><td class="num">5</td><td>yes</td></tr>
+<tr><td class="num">12</td><td>Theme Sub-Category</td><td class="num">2</td><td class="num">5</td><td>yes</td></tr>
+<tr><td class="num">13</td><td>Subscriber Reset</td><td class="num">1</td><td class="num">8</td><td>yes</td></tr>
+<tr><td class="num">14</td><td>Authorization</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">15</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">16</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">17</td><td>Key Distribution</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">18</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">19</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">20</td><td>Sequence Number</td><td class="num">1</td><td class="num">2</td><td>yes</td></tr>
+<tr><td class="num">21</td><td>Station Node Status</td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">22</td><td>Long Assign IR Codes</td><td class="num">2</td><td class="num">12</td><td>no</td></tr>
+<tr><td class="num">23</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">24</td><td>Subscriber Unit</td><td class="num">2</td><td class="num">9</td><td>no</td></tr>
+<tr><td class="num">25</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">26</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">27</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">28</td><td></td><td class="num">1</td><td class="num">2</td><td>no</td></tr>
+<tr><td class="num">29</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">30</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">31</td><td>Postal Code</td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">32</td><td>News Service</td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">33</td><td>News Menu</td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">34</td><td>News Page</td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">35</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">36</td><td>Segmented Command</td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">37</td><td></td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">38</td><td></td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">39</td><td></td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">40</td><td></td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">41</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">42</td><td></td><td class="num">2</td><td class="num">3</td><td>yes</td></tr>
+<tr><td class="num">43</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">44</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">45</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">46</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">47</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">48</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">49</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">50</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">51</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">52</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">53</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">54</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">55</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">56</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">57</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">58</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">59</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">60</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">61</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">62</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+<tr><td class="num">63</td><td></td><td class="num">2</td><td class="num">3</td><td>no</td></tr>
+</tbody></table>
+<h2 id='command-layouts'>Command layouts</h2>
+<p>Every type whose layout is known, by type. Offsets count from byte 0, the type.</p>
+<h3 id='time'>Time &mdash; type 1</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2-5</td><td>the time, to the minute</td></tr>
+<tr><td>6</td><td>zone and daylight saving flags</td></tr>
+<tr><td>7</td><td>seconds</td></tr>
+</tbody></table>
+<h3 id='daylight-saving-change'>Daylight Saving Change &mdash; type 2</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2-5</td><td>daylight saving starts</td></tr>
+<tr><td>6-9</td><td>daylight saving ends</td></tr>
+</tbody></table>
+<h3 id='region'>Region &mdash; type 3</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3-4</td><td>region id</td></tr>
+<tr><td>5</td><td>flags</td></tr>
+<tr><td>6-9</td><td>the time the lineup takes effect</td></tr>
+<tr><td>10</td><td>channel count, so a lineup holds at most 255</td></tr>
+<tr><td>11.. +0</td><td>bit 7: channel number bit 8; bits 0-6: channel id high 7</td></tr>
+<tr><td>11.. +1</td><td>channel id low 8 (15 bits with the byte before)</td></tr>
+<tr><td>11.. +2</td><td>channel number low 8 (9 bits with the byte before): the number the channel sits on in this region</td></tr>
+<tr><td>11.. +3</td><td>the tier, and two bits of unknown meaning</td></tr>
+</tbody></table>
+<h3 id='channel-data'>Channel Data &mdash; type 4</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length, 16</td></tr>
+<tr><td>2</td><td>unknown</td></tr>
+<tr><td>3</td><td>bit 7: channel number bit 8; bits 0-6: channel id high 7</td></tr>
+<tr><td>4</td><td>channel id low 8 (15 bits with byte 3)</td></tr>
+<tr><td>5</td><td>flags</td></tr>
+<tr><td>6</td><td>channel number low 8 (9 bits with byte 3): the channel a station broadcasts on, zero for a cable service</td></tr>
+<tr><td>7</td><td>which of bytes 8-15 make the short label</td></tr>
+<tr><td>8-15</td><td>a station&#x27;s CALL-NET - call letters, a dash, the network - or a cable service&#x27;s name, which can carry a dash of its own: SCI-FI, CNN-HLN, DSC-KIDS</td></tr>
+</tbody></table>
+<h3 id='show-list'>Show List &mdash; type 5</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type and the encryption bits; an encrypted list keeps bytes 0-10 in the clear</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>low nibble: a version. A receiver skips a list for a channel and day it already holds at it, and a revised day comes with a higher one</td></tr>
+<tr><td>4-5</td><td>channel id, 15 bits (0x7FFF)</td></tr>
+<tr><td>6-9</td><td>start of the first slot, a GMT midnight</td></tr>
+<tr><td>10</td><td>slot count</td></tr>
+<tr><td>11..</td><td>slots: flags, minutes, show id, then the optional fields</td></tr>
+</tbody></table>
+<h3 id='show-title'>Show Title &mdash; type 6</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2</td><td>flags</td></tr>
+<tr><td>3-4</td><td>show id</td></tr>
+<tr><td>5-6</td><td>theme id</td></tr>
+<tr><td>7..</td><td>title</td></tr>
+</tbody></table>
+<h3 id='show-description'>Show Description &mdash; type 8</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2</td><td>flags</td></tr>
+<tr><td>3-4</td><td>description id</td></tr>
+<tr><td>7</td><td>critic&#x27;s stars (bits 7-5), film rating code (bits 4-1), extended form only. The codes are 0 NR, 1 G, 2 NC-17, 3 PG, 4 PG-13, 5 R, 6 NC-17, 7 NC-17</td></tr>
+<tr><td>8</td><td>content advisories, extended form only</td></tr>
+<tr><td>9</td><td>year, last two digits, zero for none; extended form only</td></tr>
+<tr><td>7.. or 10..</td><td>text, after the extended bytes when present</td></tr>
+</tbody></table>
+<h3 id='region-name'>Region Name &mdash; type 9</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2-3</td><td>region id</td></tr>
+<tr><td>4..</td><td>the name, always compressed: &#x27;columbus, oh&#x27;, &#x27;akron - time warner cable&#x27;</td></tr>
+</tbody></table>
+<h3 id='cycle-start'>Cycle Start &mdash; type 10</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length, 9</td></tr>
+<tr><td>2-8</td><td>unexplained. The command marks the start of a carousel cycle; a receiver scanning for the guide counts them</td></tr>
+</tbody></table>
+<h3 id='theme-category'>Theme Category &mdash; type 11</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>version; a change means every name is to be reloaded</td></tr>
+<tr><td>4</td><td>entry count</td></tr>
+<tr><td>5..</td><td>entries of: id, flags, length, then a NUL terminated name: 1 Movies to 11 Miscellaneous. The flag byte&#x27;s meaning is unknown</td></tr>
+</tbody></table>
+<h3 id='theme-sub-category'>Theme Sub-Category &mdash; type 12</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>the Theme Category id these belong to</td></tr>
+<tr><td>4</td><td>entry count, low 7 bits</td></tr>
+<tr><td>5..</td><td>entries of: their own length, flags, a count of theme ids, the ids, then the name. They are the receiver&#x27;s search menus: each category opens with an &#x27;All&#x27; list and closes with a &#x27;Closed Captioned&#x27; one, and one theme sits in as many as fit it. The flag byte&#x27;s meaning is unknown</td></tr>
+</tbody></table>
+<h3 id='subscriber-reset'>Subscriber Reset &mdash; type 13</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2</td><td>what to discard</td></tr>
+<tr><td>3-7</td><td>the receiver it is for; zero for every receiver</td></tr>
+</tbody></table>
+<h3 id='authorization'>Authorization &mdash; type 14</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2-5</td><td>the receiver it is for</td></tr>
+<tr><td>6..</td><td>opaque</td></tr>
+</tbody></table>
+<h3 id='key-distribution'>Key Distribution &mdash; type 17</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2-5</td><td>the receiver it is for; sent in rising order</td></tr>
+<tr><td>6..</td><td>opaque</td></tr>
+</tbody></table>
+<h3 id='sequence-number'>Sequence Number &mdash; type 20</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1</td><td>length</td></tr>
+<tr><td>2-5</td><td>a 32 bit counter, one per packet</td></tr>
+</tbody></table>
+<h3 id='station-node-status'>Station Node Status &mdash; type 21</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length: growing in layout 1; 721 to 743 bytes in layouts 3 and 4</td></tr>
+<tr><td>3</td><td>layout: 1, 3 or 4. Layout 1 places its fields after byte 20 differently</td></tr>
+<tr><td>4-5</td><td>in layouts 3 and 4, a software release: 200, 403 and 405 are known</td></tr>
+<tr><td>6-7</td><td>the stream id the packet headers carry</td></tr>
+<tr><td>8-11</td><td>a Unix time, constant over a session</td></tr>
+<tr><td>12-15</td><td>when the block&#x27;s contents were assembled, Unix seconds; unset in layout 4</td></tr>
+<tr><td>20-23</td><td>a Unix time, or 0x12CEA600 - 1980-01-01, the zero of a DOS clock - where nothing set it, as every unset time in the block is</td></tr>
+<tr><td>58 (layout 1), 48 (layout 3), 48 (layout 4)</td><td>the station clock when the block was sent, Unix seconds</td></tr>
+<tr><td>38-39, 50-51, 40-41 (layout 1)</td><td>how far through its cycle the station is: a total, how many are done and how many remain, the last two adding up to the first</td></tr>
+<tr><td>66-67 (layout 1)</td><td>minutes since the assembly time. The block grows by two bytes for every eight</td></tr>
+<tr><td>the rest of layout 1</td><td>zero</td></tr>
+<tr><td>56-57 (layouts 3 and 4)</td><td>how many bits of each minute map are in use, 1433 to 1440: it gains one a minute, and when it would pass 1440 both maps turn a byte to the left and it drops by eight, so the bit before it is the current minute</td></tr>
+<tr><td>58-237, 238-417</td><td>two maps of the last day, a bit a minute, the first bit the most significant. What a set bit means is unknown</td></tr>
+<tr><td>420-429 (layout 4)</td><td>an unset time and six zero bytes, which layout 4 inserts, so everything after them sits 10 bytes later than in layout 3</td></tr>
+<tr><td>432-459</td><td>the station&#x27;s inventory of its own guide: how many it holds of each of 14 tables - regions, channels, titles, descriptions, then the schedules of 10 days from the GMT day of its clock, each counting channels</td></tr>
+<tr><td>460-461</td><td>the stream id again</td></tr>
+<tr><td>462</td><td>the number of tables, 14</td></tr>
+<tr><td>463-714</td><td>a 18 byte record a table of what the station lacks: a count, then the lowest eight missing ids, ascending, zero where there are fewer</td></tr>
+<tr><td>721-724</td><td>from software 403 on, a time at the same local time every day, always the latest one before the clock</td></tr>
+<tr><td>the rest of layouts 3 and 4</td><td>unknown: times at 20-27 and 420-431, a running counter at 30-33, constants at 28-29 and 38-39, values at 40-47, and short counts at 715-732</td></tr>
+</tbody></table>
+<h3 id='postal-code'>Postal Code &mdash; type 31</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3-8</td><td>the postal code as text; codes are sent in sort order</td></tr>
+<tr><td>9</td><td>unknown</td></tr>
+<tr><td>10</td><td>antenna region count</td></tr>
+<tr><td>11</td><td>cable region count</td></tr>
+<tr><td>12..</td><td>that many two byte region ids, then the cable ones</td></tr>
+<tr><td>then</td><td>the news area its pages are filed under, then a byte of unknown meaning</td></tr>
+</tbody></table>
+<h3 id='news-service'>News Service &mdash; type 32</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3-6</td><td>unknown</td></tr>
+<tr><td>7</td><td>name length</td></tr>
+<tr><td>8..</td><td>the name, usually in the clear: &#x27;StarSight NEWS Services&#x27;</td></tr>
+</tbody></table>
+<h3 id='news-menu'>News Menu &mdash; type 33</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>unknown</td></tr>
+<tr><td>4</td><td>section count</td></tr>
+<tr><td>5..</td><td>sections of: number, five unknown bytes, name length, the name compressed</td></tr>
+</tbody></table>
+<h3 id='news-page'>News Page &mdash; type 34</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>the menu section it is under</td></tr>
+<tr><td>4</td><td>unknown</td></tr>
+<tr><td>5-6</td><td>page number</td></tr>
+<tr><td>7</td><td>flags</td></tr>
+<tr><td>8-9</td><td>unknown</td></tr>
+<tr><td>10</td><td>the news area of the postal codes it is for; zero for every area</td></tr>
+<tr><td>11-14</td><td>when it was written</td></tr>
+<tr><td>15</td><td>unknown</td></tr>
+<tr><td>16</td><td>title length</td></tr>
+<tr><td>17..</td><td>the title, compressed</td></tr>
+<tr><td>then</td><td>text length, sixteen bits; 0x8000 set when the text is in the clear</td></tr>
+<tr><td>then</td><td>the text: compressed, it breaks lines with the 0x1F phrase, &#x27;ur&#x27; everywhere else; in the clear, with CR. `i, `a and `d set text apart up to `e or the end of the line</td></tr>
+</tbody></table>
+<h3 id='segmented-command'>Segmented Command &mdash; type 36</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>high nibble: this part; low nibble: the last part</td></tr>
+<tr><td>4</td><td>which message the parts belong to</td></tr>
+<tr><td>5..</td><td>that part of a command. Joined in order, the parts end with a CRC-32 over the whole, at most 3000 bytes</td></tr>
+</tbody></table>
+<h3 id='type-37'>type 37 &mdash; type 37</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3</td><td>low nibble: a version; a day already held at it is skipped</td></tr>
+<tr><td>4-5</td><td>region count</td></tr>
+<tr><td>6..</td><td>that many region ids: the regions it is for</td></tr>
+<tr><td>after them</td><td>a midnight, one of the next seven</td></tr>
+<tr><td>then</td><td>an entry count, and that many entries of a byte and a 16 bit value</td></tr>
+</tbody></table>
+<h3 id='type-38'>type 38 &mdash; type 38</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3-4</td><td>an id</td></tr>
+<tr><td>5</td><td>a byte</td></tr>
+<tr><td>6</td><td>flags</td></tr>
+<tr><td>7</td><td>low 3 bits: first length; upper bits: more flags</td></tr>
+<tr><td>8</td><td>second length</td></tr>
+<tr><td>9</td><td>third length</td></tr>
+<tr><td>10-11</td><td>a 16 bit value</td></tr>
+<tr><td>12..</td><td>the three payloads, one after another</td></tr>
+</tbody></table>
+<h3 id='type-39'>type 39 &mdash; type 39</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3-4</td><td>an id</td></tr>
+<tr><td>5-6</td><td>a 16 bit value</td></tr>
+<tr><td>7-10</td><td>a 32 bit value</td></tr>
+<tr><td>11</td><td>a byte</td></tr>
+</tbody></table>
+<h3 id='type-40'>type 40 &mdash; type 40</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>3-4</td><td>an id</td></tr>
+<tr><td>5</td><td>a byte</td></tr>
+<tr><td>6..</td><td>payload, to the length in bytes 1-2</td></tr>
+</tbody></table>
+<h3 id='type-42'>type 42 &mdash; type 42</h3>
+<table><thead><tr><th>Byte</th><th>Field</th></tr></thead><tbody>
+<tr><td>0</td><td>type</td></tr>
+<tr><td>1-2</td><td>length</td></tr>
+<tr><td>8</td><td>bits 4-5: 0 stops a receiver acting on Region, Channel Data, Show List, the theme commands and types 36 and 37; 1 lets it act on them again; 2 and 3 do nothing</td></tr>
+<tr><td>3-25</td><td>otherwise unexplained</td></tr>
+</tbody></table>
+<h2 id='flag-bits'>Flag bits</h2>
+<h3>Command byte 0</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x3F</td><td>type</td><td>The command type.</td></tr>
+<tr><td>0x80</td><td>encrypted</td><td>The command is encrypted. An encrypted Show List keeps bytes 0-10 - version, channel, start and slot count - in the clear and enciphers its slots.</td></tr>
+<tr><td>0x40</td><td>key</td><td>Which of two keys enciphered it.</td></tr>
+</tbody></table>
+<h3>Show Title byte 2</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x80</td><td>compressed</td><td>The title is compressed.</td></tr>
+<tr><td>0x40</td><td>closedCaptioned</td><td>The program is closed captioned.</td></tr>
+<tr><td>0x20</td><td>stereo</td><td>The program is in stereo.</td></tr>
+<tr><td>0x10</td><td>blackAndWhite</td><td>The program is in black and white.</td></tr>
+<tr><td>0x0F</td><td>unused</td><td>Unused; no part of the show id.</td></tr>
+</tbody></table>
+<h3>Show Description byte 2</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x80</td><td>compressed</td><td>The text is compressed.</td></tr>
+<tr><td>0x40</td><td>closedCaptioned</td><td>The program described is closed captioned, as its Show Title says.</td></tr>
+<tr><td>0x20</td><td>stereo</td><td>The program described is in stereo.</td></tr>
+<tr><td>0x10</td><td>blackAndWhite</td><td>The program described is in black and white.</td></tr>
+<tr><td>0x08</td><td>extended</td><td>Rating, advisories and year precede the text, which then starts at byte 10.</td></tr>
+</tbody></table>
+<h3>Show List slot byte 0</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x80</td><td>hasDescription</td><td>Two more bytes follow: a description id.</td></tr>
+<tr><td>0x40</td><td>payPerView</td><td>Pay per view.</td></tr>
+<tr><td>0x20</td><td>hasShowGroup</td><td>Two more bytes follow: a show group.</td></tr>
+<tr><td>0x1E</td><td>unused</td><td>Unused.</td></tr>
+<tr><td>0x01</td><td>joinedInProgress</td><td>On a list&#x27;s first slot: the program was already running when the list starts.</td></tr>
+</tbody></table>
+<h3>Show Description byte 8, content advisories</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x02</td><td>nudity</td><td>The program carries this advisory.</td></tr>
+<tr><td>0x04</td><td>violence</td><td>The program carries this advisory.</td></tr>
+<tr><td>0x08</td><td>adult situations</td><td>The program carries this advisory.</td></tr>
+<tr><td>0x10</td><td>adult themes</td><td>The program carries this advisory.</td></tr>
+<tr><td>0x80</td><td>adult language</td><td>The program carries this advisory.</td></tr>
+<tr><td>0x01</td><td>unknown bit 0</td><td>Unknown.</td></tr>
+<tr><td>0x20</td><td>unknown bit 5</td><td>Unknown.</td></tr>
+<tr><td>0x40</td><td>unknown bit 6</td><td>Unknown.</td></tr>
+</tbody></table>
+<h3>Time byte 6</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x0F</td><td>utcOffsetHours</td><td>The station&#x27;s standard offset from GMT, whole hours.</td></tr>
+<tr><td>0x10</td><td>offsetIsNegative</td><td>The offset is west of Greenwich.</td></tr>
+<tr><td>0x40</td><td>notAProvider</td><td>This channel is not a StarSight provider: a receiver scanning for the guide passes it over.</td></tr>
+<tr><td>0x80</td><td>daylightSaving</td><td>Daylight saving is in force: the wall clock is an hour ahead of the offset.</td></tr>
+</tbody></table>
+<h3>Channel Data byte 5</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x02</td><td>showsCallSign</td><td>A cable service, shown by its name rather than a channel number.</td></tr>
+</tbody></table>
+<h3>Channel Data byte 7</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0xFF</td><td>short label</td><td>Read from 0x80 down, one bit per character of bytes 8-15: the characters selected make a 4 character label for a display too narrow for the whole name. HEADLINE with 0x9A gives HDLN, CINEMAX with 0x0E gives MAX. Zero for a station.</td></tr>
+</tbody></table>
+<h3>Region byte 5</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x20</td><td>cable</td><td>A cable system&#x27;s lineup rather than an antenna&#x27;s.</td></tr>
+<tr><td>0x01</td><td>applyNow</td><td>Use this lineup at once. Otherwise it waits until the stream&#x27;s clock reaches its effective time.</td></tr>
+</tbody></table>
+<h3>Region lineup entry byte 3</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x03</td><td>tier</td><td>The tier a cable system sells the channel in: 0 basic, 1 extended, 2 premium, 3 pay per view.</td></tr>
+<tr><td>0xC0</td><td>unknown</td><td>Unknown.</td></tr>
+</tbody></table>
+<h3>Subscriber Reset byte 2</h3>
+<table><thead><tr><th>Mask</th><th>Field</th><th>Note</th></tr></thead><tbody>
+<tr><td>0x01</td><td>clear stored guide</td><td>Clear the stored lineup, schedules and themes.</td></tr>
+<tr><td>0x02</td><td>clear stored guide and stop loading</td><td>Clear them, and stop loading the guide until restarted.</td></tr>
+</tbody></table>
+<h2 id='compression'>Compression</h2>
+<p>A Huffman code of 127 symbols, codes up to 20 bits, Kraft sum exactly 1: 0x00 ends a string, 0x01-0x1F expand to whole words and fragments, and 0x20-0x7E are the printable characters. Theme names are never compressed and region names always are. A News Page's text breaks its lines with 0x1F, which everywhere else expands to 'ur'.</p>
+<table><thead><tr><th>Code</th><th>Bits</th><th>Symbol</th></tr></thead><tbody>
+<tr><td>0100</td><td class="num">4</td><td>i</td></tr>
+<tr><td>0111</td><td class="num">4</td><td> </td></tr>
+<tr><td>1000</td><td class="num">4</td><td>e</td></tr>
+<tr><td>00011</td><td class="num">5</td><td>s </td></tr>
+<tr><td>00100</td><td class="num">5</td><td>m</td></tr>
+<tr><td>00101</td><td class="num">5</td><td>h</td></tr>
+<tr><td>00111</td><td class="num">5</td><td>d</td></tr>
+<tr><td>01101</td><td class="num">5</td><td>r</td></tr>
+<tr><td>10100</td><td class="num">5</td><td>c</td></tr>
+<tr><td>10110</td><td class="num">5</td><td>s</td></tr>
+<tr><td>10111</td><td class="num">5</td><td>t</td></tr>
+<tr><td>11001</td><td class="num">5</td><td>l</td></tr>
+<tr><td>11101</td><td class="num">5</td><td>o</td></tr>
+<tr><td>11110</td><td class="num">5</td><td>a</td></tr>
+<tr><td>000000</td><td class="num">6</td><td>n</td></tr>
+<tr><td>000010</td><td class="num">6</td><td>a </td></tr>
+<tr><td>000011</td><td class="num">6</td><td>ar</td></tr>
+<tr><td>000100</td><td class="num">6</td><td>, </td></tr>
+<tr><td>001100</td><td class="num">6</td><td>er</td></tr>
+<tr><td>010100</td><td class="num">6</td><td>f</td></tr>
+<tr><td>010101</td><td class="num">6</td><td>b</td></tr>
+<tr><td>010110</td><td class="num">6</td><td>in</td></tr>
+<tr><td>011001</td><td class="num">6</td><td>an</td></tr>
+<tr><td>100111</td><td class="num">6</td><td>\x00</td></tr>
+<tr><td>101010</td><td class="num">6</td><td>g</td></tr>
+<tr><td>110000</td><td class="num">6</td><td>.</td></tr>
+<tr><td>110100</td><td class="num">6</td><td>u</td></tr>
+<tr><td>110110</td><td class="num">6</td><td>e </td></tr>
+<tr><td>111000</td><td class="num">6</td><td>p</td></tr>
+<tr><td>0000010</td><td class="num">7</td><td>to </td></tr>
+<tr><td>0011011</td><td class="num">7</td><td>or</td></tr>
+<tr><td>0101111</td><td class="num">7</td><td> the </td></tr>
+<tr><td>0110000</td><td class="num">7</td><td>er </td></tr>
+<tr><td>0110001</td><td class="num">7</td><td>A</td></tr>
+<tr><td>1001000</td><td class="num">7</td><td>th</td></tr>
+<tr><td>1001001</td><td class="num">7</td><td>al</td></tr>
+<tr><td>1001011</td><td class="num">7</td><td>y</td></tr>
+<tr><td>1010110</td><td class="num">7</td><td>t </td></tr>
+<tr><td>1010111</td><td class="num">7</td><td>st</td></tr>
+<tr><td>1100011</td><td class="num">7</td><td>k</td></tr>
+<tr><td>1101110</td><td class="num">7</td><td>y </td></tr>
+<tr><td>1110010</td><td class="num">7</td><td>on</td></tr>
+<tr><td>1111101</td><td class="num">7</td><td>v</td></tr>
+<tr><td>1111110</td><td class="num">7</td><td>en</td></tr>
+<tr><td>1111111</td><td class="num">7</td><td>w</td></tr>
+<tr><td>00000111</td><td class="num">8</td><td>H</td></tr>
+<tr><td>00010100</td><td class="num">8</td><td>for</td></tr>
+<tr><td>00010101</td><td class="num">8</td><td>-</td></tr>
+<tr><td>00010111</td><td class="num">8</td><td>D</td></tr>
+<tr><td>00110100</td><td class="num">8</td><td>J</td></tr>
+<tr><td>00110101</td><td class="num">8</td><td>R</td></tr>
+<tr><td>01011101</td><td class="num">8</td><td>&#x27;s </td></tr>
+<tr><td>10010101</td><td class="num">8</td><td>B</td></tr>
+<tr><td>10011000</td><td class="num">8</td><td>un</td></tr>
+<tr><td>10011010</td><td class="num">8</td><td>of </td></tr>
+<tr><td>11000100</td><td class="num">8</td><td>ed </td></tr>
+<tr><td>11000101</td><td class="num">8</td><td>ur</td></tr>
+<tr><td>11010101</td><td class="num">8</td><td>M</td></tr>
+<tr><td>11010110</td><td class="num">8</td><td>C</td></tr>
+<tr><td>11010111</td><td class="num">8</td><td>S</td></tr>
+<tr><td>11100110</td><td class="num">8</td><td>ing </td></tr>
+<tr><td>11100111</td><td class="num">8</td><td>and </td></tr>
+<tr><td>000001101</td><td class="num">9</td><td>The </td></tr>
+<tr><td>000101100</td><td class="num">9</td><td>with </td></tr>
+<tr><td>000101101</td><td class="num">9</td><td>z</td></tr>
+<tr><td>010111000</td><td class="num">9</td><td>K</td></tr>
+<tr><td>100101000</td><td class="num">9</td><td>;</td></tr>
+<tr><td>100110010</td><td class="num">9</td><td>E</td></tr>
+<tr><td>100110011</td><td class="num">9</td><td>x</td></tr>
+<tr><td>100110111</td><td class="num">9</td><td>tion</td></tr>
+<tr><td>110101000</td><td class="num">9</td><td>&quot;</td></tr>
+<tr><td>110111100</td><td class="num">9</td><td>F</td></tr>
+<tr><td>110111101</td><td class="num">9</td><td>P</td></tr>
+<tr><td>110111110</td><td class="num">9</td><td>G</td></tr>
+<tr><td>110111111</td><td class="num">9</td><td>W</td></tr>
+<tr><td>111110000</td><td class="num">9</td><td>T</td></tr>
+<tr><td>111110011</td><td class="num">9</td><td>L</td></tr>
+<tr><td>0101110010</td><td class="num">10</td><td>O</td></tr>
+<tr><td>0101110011</td><td class="num">10</td><td>q</td></tr>
+<tr><td>1001010011</td><td class="num">10</td><td>V</td></tr>
+<tr><td>1001101100</td><td class="num">10</td><td>when </td></tr>
+<tr><td>1101010010</td><td class="num">10</td><td>I</td></tr>
+<tr><td>1111100010</td><td class="num">10</td><td>:</td></tr>
+<tr><td>1111100100</td><td class="num">10</td><td>N</td></tr>
+<tr><td>1111100101</td><td class="num">10</td><td>j</td></tr>
+<tr><td>00000110000</td><td class="num">11</td><td>Y</td></tr>
+<tr><td>00000110001</td><td class="num">11</td><td>(</td></tr>
+<tr><td>00000110010</td><td class="num">11</td><td>)</td></tr>
+<tr><td>10010100100</td><td class="num">11</td><td>U</td></tr>
+<tr><td>10011011010</td><td class="num">11</td><td>9</td></tr>
+<tr><td>10011011011</td><td class="num">11</td><td>0</td></tr>
+<tr><td>11010100111</td><td class="num">11</td><td>1</td></tr>
+<tr><td>11111000111</td><td class="num">11</td><td>&#x27;</td></tr>
+<tr><td>000001100110</td><td class="num">12</td><td>Z</td></tr>
+<tr><td>100101001010</td><td class="num">12</td><td>7</td></tr>
+<tr><td>110101001101</td><td class="num">12</td><td>2</td></tr>
+<tr><td>111110001101</td><td class="num">12</td><td>,</td></tr>
+<tr><td>1001010010110</td><td class="num">13</td><td>8</td></tr>
+<tr><td>1001010010111</td><td class="num">13</td><td>6</td></tr>
+<tr><td>1101010011000</td><td class="num">13</td><td>5</td></tr>
+<tr><td>1101010011001</td><td class="num">13</td><td>Q</td></tr>
+<tr><td>1111100011000</td><td class="num">13</td><td>3</td></tr>
+<tr><td>1111100011001</td><td class="num">13</td><td>4</td></tr>
+<tr><td>00000110011100</td><td class="num">14</td><td>&amp;</td></tr>
+<tr><td>00000110011111</td><td class="num">14</td><td>$</td></tr>
+<tr><td>000001100111010</td><td class="num">15</td><td>?</td></tr>
+<tr><td>000001100111100</td><td class="num">15</td><td>X</td></tr>
+<tr><td>0000011001110111</td><td class="num">16</td><td>/</td></tr>
+<tr><td>0000011001111011</td><td class="num">16</td><td>!</td></tr>
+<tr><td>00000110011101100</td><td class="num">17</td><td>`</td></tr>
+<tr><td>00000110011101101</td><td class="num">17</td><td>*</td></tr>
+<tr><td>00000110011110100000</td><td class="num">20</td><td>+</td></tr>
+<tr><td>00000110011110100001</td><td class="num">20</td><td>&lt;</td></tr>
+<tr><td>00000110011110100010</td><td class="num">20</td><td>=</td></tr>
+<tr><td>00000110011110100011</td><td class="num">20</td><td>&gt;</td></tr>
+<tr><td>00000110011110100100</td><td class="num">20</td><td>@</td></tr>
+<tr><td>00000110011110100101</td><td class="num">20</td><td>[</td></tr>
+<tr><td>00000110011110100110</td><td class="num">20</td><td>\\</td></tr>
+<tr><td>00000110011110100111</td><td class="num">20</td><td>]</td></tr>
+<tr><td>00000110011110101000</td><td class="num">20</td><td>^</td></tr>
+<tr><td>00000110011110101001</td><td class="num">20</td><td>_</td></tr>
+<tr><td>00000110011110101010</td><td class="num">20</td><td>{</td></tr>
+<tr><td>00000110011110101011</td><td class="num">20</td><td>|</td></tr>
+<tr><td>00000110011110101100</td><td class="num">20</td><td>}</td></tr>
+<tr><td>00000110011110101101</td><td class="num">20</td><td>~</td></tr>
+<tr><td>00000110011110101110</td><td class="num">20</td><td>#</td></tr>
+<tr><td>00000110011110101111</td><td class="num">20</td><td>%</td></tr>
+</tbody></table>
+</main></body></html>

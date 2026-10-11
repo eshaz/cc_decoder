@@ -1,0 +1,2125 @@
+{
+ "packet": [
+  {
+   "offset": 0,
+   "bytes": 1,
+   "field": "sync",
+   "note": "Always 0x2C."
+  },
+  {
+   "offset": 1,
+   "bytes": 2,
+   "field": "size",
+   "note": "The whole packet in bytes, this header and the trailer included, MSB first. At most 0x7F8."
+  },
+  {
+   "offset": 3,
+   "bytes": 4,
+   "field": "time",
+   "note": "The minute the packet was sent: minutes since 1992-01-01 GMT, MSB first."
+  },
+  {
+   "offset": 7,
+   "bytes": 2,
+   "field": "stream",
+   "note": "Stream id, naming the feed."
+  },
+  {
+   "offset": 9,
+   "bytes": 2,
+   "field": "header check",
+   "note": "The low 16 bits of the CRC of bytes 0-8, least significant byte first."
+  },
+  {
+   "offset": 11,
+   "bytes": null,
+   "field": "commands",
+   "note": "Concatenated commands, which fill it exactly."
+  },
+  {
+   "offset": null,
+   "bytes": 4,
+   "field": "body check",
+   "note": "The CRC of everything before it, least significant byte first, so that the CRC of the whole packet is zero."
+  }
+ ],
+ "checksums": [
+  {
+   "property": "algorithm",
+   "value": "Table driven reflected CRC-32"
+  },
+  {
+   "property": "polynomial",
+   "value": "0xEDB88320, the standard IEEE one"
+  },
+  {
+   "property": "initial value",
+   "value": "0xFFFFFFFF"
+  },
+  {
+   "property": "final inversion",
+   "value": "none - the register is returned as it stands"
+  },
+  {
+   "property": "header check",
+   "value": "crc(bytes 0..8) & 0xFFFF == bytes 9-10 read little endian"
+  },
+  {
+   "property": "body check",
+   "value": "crc(the whole packet, its own trailer included) == 0"
+  }
+ ],
+ "commands": [
+  {
+   "type": 0,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 0,
+   "decoded": false
+  },
+  {
+   "type": 1,
+   "name": "Time",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 2,
+   "name": "Daylight Saving Change",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 3,
+   "name": "Region",
+   "lengthBytes": 2,
+   "headerBytes": 10,
+   "decoded": true
+  },
+  {
+   "type": 4,
+   "name": "Channel Data",
+   "lengthBytes": 1,
+   "headerBytes": 5,
+   "decoded": true
+  },
+  {
+   "type": 5,
+   "name": "Show List",
+   "lengthBytes": 2,
+   "headerBytes": 11,
+   "decoded": true
+  },
+  {
+   "type": 6,
+   "name": "Show Title",
+   "lengthBytes": 1,
+   "headerBytes": 5,
+   "decoded": true
+  },
+  {
+   "type": 7,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 8,
+   "name": "Show Description",
+   "lengthBytes": 1,
+   "headerBytes": 5,
+   "decoded": true
+  },
+  {
+   "type": 9,
+   "name": "Region Name",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 10,
+   "name": "Cycle Start",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 11,
+   "name": "Theme Category",
+   "lengthBytes": 2,
+   "headerBytes": 5,
+   "decoded": true
+  },
+  {
+   "type": 12,
+   "name": "Theme Sub-Category",
+   "lengthBytes": 2,
+   "headerBytes": 5,
+   "decoded": true
+  },
+  {
+   "type": 13,
+   "name": "Subscriber Reset",
+   "lengthBytes": 1,
+   "headerBytes": 8,
+   "decoded": true
+  },
+  {
+   "type": 14,
+   "name": "Authorization",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 15,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 16,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 17,
+   "name": "Key Distribution",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 18,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 19,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 20,
+   "name": "Sequence Number",
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": true
+  },
+  {
+   "type": 21,
+   "name": "Station Node Status",
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 22,
+   "name": "Long Assign IR Codes",
+   "lengthBytes": 2,
+   "headerBytes": 12,
+   "decoded": false
+  },
+  {
+   "type": 23,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 24,
+   "name": "Subscriber Unit",
+   "lengthBytes": 2,
+   "headerBytes": 9,
+   "decoded": false
+  },
+  {
+   "type": 25,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 26,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 27,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 28,
+   "name": null,
+   "lengthBytes": 1,
+   "headerBytes": 2,
+   "decoded": false
+  },
+  {
+   "type": 29,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 30,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 31,
+   "name": "Postal Code",
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 32,
+   "name": "News Service",
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 33,
+   "name": "News Menu",
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 34,
+   "name": "News Page",
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 35,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 36,
+   "name": "Segmented Command",
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 37,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 38,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 39,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 40,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 41,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 42,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": true
+  },
+  {
+   "type": 43,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 44,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 45,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 46,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 47,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 48,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 49,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 50,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 51,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 52,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 53,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 54,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 55,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 56,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 57,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 58,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 59,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 60,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 61,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 62,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  },
+  {
+   "type": 63,
+   "name": null,
+   "lengthBytes": 2,
+   "headerBytes": 3,
+   "decoded": false
+  }
+ ],
+ "commandLayouts": [
+  {
+   "name": "Time",
+   "type": 1,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "the time, to the minute"
+    },
+    {
+     "at": "6",
+     "field": "zone and daylight saving flags"
+    },
+    {
+     "at": "7",
+     "field": "seconds"
+    }
+   ]
+  },
+  {
+   "name": "Daylight Saving Change",
+   "type": 2,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "daylight saving starts"
+    },
+    {
+     "at": "6-9",
+     "field": "daylight saving ends"
+    }
+   ]
+  },
+  {
+   "name": "Region",
+   "type": 3,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3-4",
+     "field": "region id"
+    },
+    {
+     "at": "5",
+     "field": "flags"
+    },
+    {
+     "at": "6-9",
+     "field": "the time the lineup takes effect"
+    },
+    {
+     "at": "10",
+     "field": "channel count, so a lineup holds at most 255"
+    },
+    {
+     "at": "11.. +0",
+     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7"
+    },
+    {
+     "at": "11.. +1",
+     "field": "channel id low 8 (15 bits with the byte before)"
+    },
+    {
+     "at": "11.. +2",
+     "field": "channel number low 8 (9 bits with the byte before): the number the channel sits on in this region"
+    },
+    {
+     "at": "11.. +3",
+     "field": "the tier, and two bits of unknown meaning"
+    }
+   ]
+  },
+  {
+   "name": "Channel Data",
+   "type": 4,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length, 16"
+    },
+    {
+     "at": "2",
+     "field": "unknown"
+    },
+    {
+     "at": "3",
+     "field": "bit 7: channel number bit 8; bits 0-6: channel id high 7"
+    },
+    {
+     "at": "4",
+     "field": "channel id low 8 (15 bits with byte 3)"
+    },
+    {
+     "at": "5",
+     "field": "flags"
+    },
+    {
+     "at": "6",
+     "field": "channel number low 8 (9 bits with byte 3): the channel a station broadcasts on, zero for a cable service"
+    },
+    {
+     "at": "7",
+     "field": "which of bytes 8-15 make the short label"
+    },
+    {
+     "at": "8-15",
+     "field": "a station's CALL-NET - call letters, a dash, the network - or a cable service's name, which can carry a dash of its own: SCI-FI, CNN-HLN, DSC-KIDS"
+    }
+   ]
+  },
+  {
+   "name": "Show List",
+   "type": 5,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type and the encryption bits; an encrypted list keeps bytes 0-10 in the clear"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "low nibble: a version. A receiver skips a list for a channel and day it already holds at it, and a revised day comes with a higher one"
+    },
+    {
+     "at": "4-5",
+     "field": "channel id, 15 bits (0x7FFF)"
+    },
+    {
+     "at": "6-9",
+     "field": "start of the first slot, a GMT midnight"
+    },
+    {
+     "at": "10",
+     "field": "slot count"
+    },
+    {
+     "at": "11..",
+     "field": "slots: flags, minutes, show id, then the optional fields"
+    }
+   ]
+  },
+  {
+   "name": "Show Title",
+   "type": 6,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2",
+     "field": "flags"
+    },
+    {
+     "at": "3-4",
+     "field": "show id"
+    },
+    {
+     "at": "5-6",
+     "field": "theme id"
+    },
+    {
+     "at": "7..",
+     "field": "title"
+    }
+   ]
+  },
+  {
+   "name": "Show Description",
+   "type": 8,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2",
+     "field": "flags"
+    },
+    {
+     "at": "3-4",
+     "field": "description id"
+    },
+    {
+     "at": "7",
+     "field": "critic's stars (bits 7-5), film rating code (bits 4-1), extended form only. The codes are 0 NR, 1 G, 2 NC-17, 3 PG, 4 PG-13, 5 R, 6 NC-17, 7 NC-17"
+    },
+    {
+     "at": "8",
+     "field": "content advisories, extended form only"
+    },
+    {
+     "at": "9",
+     "field": "year, last two digits, zero for none; extended form only"
+    },
+    {
+     "at": "7.. or 10..",
+     "field": "text, after the extended bytes when present"
+    }
+   ]
+  },
+  {
+   "name": "Region Name",
+   "type": 9,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-3",
+     "field": "region id"
+    },
+    {
+     "at": "4..",
+     "field": "the name, always compressed: 'columbus, oh', 'akron - time warner cable'"
+    }
+   ]
+  },
+  {
+   "name": "Cycle Start",
+   "type": 10,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length, 9"
+    },
+    {
+     "at": "2-8",
+     "field": "unexplained. The command marks the start of a carousel cycle; a receiver scanning for the guide counts them"
+    }
+   ]
+  },
+  {
+   "name": "Theme Category",
+   "type": 11,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "version; a change means every name is to be reloaded"
+    },
+    {
+     "at": "4",
+     "field": "entry count"
+    },
+    {
+     "at": "5..",
+     "field": "entries of: id, flags, length, then a NUL terminated name: 1 Movies to 11 Miscellaneous. The flag byte's meaning is unknown"
+    }
+   ]
+  },
+  {
+   "name": "Theme Sub-Category",
+   "type": 12,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "the Theme Category id these belong to"
+    },
+    {
+     "at": "4",
+     "field": "entry count, low 7 bits"
+    },
+    {
+     "at": "5..",
+     "field": "entries of: their own length, flags, a count of theme ids, the ids, then the name. They are the receiver's search menus: each category opens with an 'All' list and closes with a 'Closed Captioned' one, and one theme sits in as many as fit it. The flag byte's meaning is unknown"
+    }
+   ]
+  },
+  {
+   "name": "Subscriber Reset",
+   "type": 13,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2",
+     "field": "what to discard"
+    },
+    {
+     "at": "3-7",
+     "field": "the receiver it is for; zero for every receiver"
+    }
+   ]
+  },
+  {
+   "name": "Authorization",
+   "type": 14,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "the receiver it is for"
+    },
+    {
+     "at": "6..",
+     "field": "opaque"
+    }
+   ]
+  },
+  {
+   "name": "Key Distribution",
+   "type": 17,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "the receiver it is for; sent in rising order"
+    },
+    {
+     "at": "6..",
+     "field": "opaque"
+    }
+   ]
+  },
+  {
+   "name": "Sequence Number",
+   "type": 20,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1",
+     "field": "length"
+    },
+    {
+     "at": "2-5",
+     "field": "a 32 bit counter, one per packet"
+    }
+   ]
+  },
+  {
+   "name": "Station Node Status",
+   "type": 21,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length: growing in layout 1; 721 to 743 bytes in layouts 3 and 4"
+    },
+    {
+     "at": "3",
+     "field": "layout: 1, 3 or 4. Layout 1 places its fields after byte 20 differently"
+    },
+    {
+     "at": "4-5",
+     "field": "in layouts 3 and 4, a software release: 200, 403 and 405 are known"
+    },
+    {
+     "at": "6-7",
+     "field": "the stream id the packet headers carry"
+    },
+    {
+     "at": "8-11",
+     "field": "a Unix time, constant over a session"
+    },
+    {
+     "at": "12-15",
+     "field": "when the block's contents were assembled, Unix seconds; unset in layout 4"
+    },
+    {
+     "at": "20-23",
+     "field": "a Unix time, or 0x12CEA600 - 1980-01-01, the zero of a DOS clock - where nothing set it, as every unset time in the block is"
+    },
+    {
+     "at": "58 (layout 1), 48 (layout 3), 48 (layout 4)",
+     "field": "the station clock when the block was sent, Unix seconds"
+    },
+    {
+     "at": "38-39, 50-51, 40-41 (layout 1)",
+     "field": "how far through its cycle the station is: a total, how many are done and how many remain, the last two adding up to the first"
+    },
+    {
+     "at": "66-67 (layout 1)",
+     "field": "minutes since the assembly time. The block grows by two bytes for every eight"
+    },
+    {
+     "at": "the rest of layout 1",
+     "field": "zero"
+    },
+    {
+     "at": "56-57 (layouts 3 and 4)",
+     "field": "how many bits of each minute map are in use, 1433 to 1440: it gains one a minute, and when it would pass 1440 both maps turn a byte to the left and it drops by eight, so the bit before it is the current minute"
+    },
+    {
+     "at": "58-237, 238-417",
+     "field": "two maps of the last day, a bit a minute, the first bit the most significant. What a set bit means is unknown"
+    },
+    {
+     "at": "420-429 (layout 4)",
+     "field": "an unset time and six zero bytes, which layout 4 inserts, so everything after them sits 10 bytes later than in layout 3"
+    },
+    {
+     "at": "432-459",
+     "field": "the station's inventory of its own guide: how many it holds of each of 14 tables - regions, channels, titles, descriptions, then the schedules of 10 days from the GMT day of its clock, each counting channels"
+    },
+    {
+     "at": "460-461",
+     "field": "the stream id again"
+    },
+    {
+     "at": "462",
+     "field": "the number of tables, 14"
+    },
+    {
+     "at": "463-714",
+     "field": "a 18 byte record a table of what the station lacks: a count, then the lowest eight missing ids, ascending, zero where there are fewer"
+    },
+    {
+     "at": "721-724",
+     "field": "from software 403 on, a time at the same local time every day, always the latest one before the clock"
+    },
+    {
+     "at": "the rest of layouts 3 and 4",
+     "field": "unknown: times at 20-27 and 420-431, a running counter at 30-33, constants at 28-29 and 38-39, values at 40-47, and short counts at 715-732"
+    }
+   ]
+  },
+  {
+   "name": "Postal Code",
+   "type": 31,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3-8",
+     "field": "the postal code as text; codes are sent in sort order"
+    },
+    {
+     "at": "9",
+     "field": "unknown"
+    },
+    {
+     "at": "10",
+     "field": "antenna region count"
+    },
+    {
+     "at": "11",
+     "field": "cable region count"
+    },
+    {
+     "at": "12..",
+     "field": "that many two byte region ids, then the cable ones"
+    },
+    {
+     "at": "then",
+     "field": "the news area its pages are filed under, then a byte of unknown meaning"
+    }
+   ]
+  },
+  {
+   "name": "News Service",
+   "type": 32,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3-6",
+     "field": "unknown"
+    },
+    {
+     "at": "7",
+     "field": "name length"
+    },
+    {
+     "at": "8..",
+     "field": "the name, usually in the clear: 'StarSight NEWS Services'"
+    }
+   ]
+  },
+  {
+   "name": "News Menu",
+   "type": 33,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "unknown"
+    },
+    {
+     "at": "4",
+     "field": "section count"
+    },
+    {
+     "at": "5..",
+     "field": "sections of: number, five unknown bytes, name length, the name compressed"
+    }
+   ]
+  },
+  {
+   "name": "News Page",
+   "type": 34,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "the menu section it is under"
+    },
+    {
+     "at": "4",
+     "field": "unknown"
+    },
+    {
+     "at": "5-6",
+     "field": "page number"
+    },
+    {
+     "at": "7",
+     "field": "flags"
+    },
+    {
+     "at": "8-9",
+     "field": "unknown"
+    },
+    {
+     "at": "10",
+     "field": "the news area of the postal codes it is for; zero for every area"
+    },
+    {
+     "at": "11-14",
+     "field": "when it was written"
+    },
+    {
+     "at": "15",
+     "field": "unknown"
+    },
+    {
+     "at": "16",
+     "field": "title length"
+    },
+    {
+     "at": "17..",
+     "field": "the title, compressed"
+    },
+    {
+     "at": "then",
+     "field": "text length, sixteen bits; 0x8000 set when the text is in the clear"
+    },
+    {
+     "at": "then",
+     "field": "the text: compressed, it breaks lines with the 0x1F phrase, 'ur' everywhere else; in the clear, with CR. `i, `a and `d set text apart up to `e or the end of the line"
+    }
+   ]
+  },
+  {
+   "name": "Segmented Command",
+   "type": 36,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "high nibble: this part; low nibble: the last part"
+    },
+    {
+     "at": "4",
+     "field": "which message the parts belong to"
+    },
+    {
+     "at": "5..",
+     "field": "that part of a command. Joined in order, the parts end with a CRC-32 over the whole, at most 3000 bytes"
+    }
+   ]
+  },
+  {
+   "name": "type 37",
+   "type": 37,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3",
+     "field": "low nibble: a version; a day already held at it is skipped"
+    },
+    {
+     "at": "4-5",
+     "field": "region count"
+    },
+    {
+     "at": "6..",
+     "field": "that many region ids: the regions it is for"
+    },
+    {
+     "at": "after them",
+     "field": "a midnight, one of the next seven"
+    },
+    {
+     "at": "then",
+     "field": "an entry count, and that many entries of a byte and a 16 bit value"
+    }
+   ]
+  },
+  {
+   "name": "type 38",
+   "type": 38,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3-4",
+     "field": "an id"
+    },
+    {
+     "at": "5",
+     "field": "a byte"
+    },
+    {
+     "at": "6",
+     "field": "flags"
+    },
+    {
+     "at": "7",
+     "field": "low 3 bits: first length; upper bits: more flags"
+    },
+    {
+     "at": "8",
+     "field": "second length"
+    },
+    {
+     "at": "9",
+     "field": "third length"
+    },
+    {
+     "at": "10-11",
+     "field": "a 16 bit value"
+    },
+    {
+     "at": "12..",
+     "field": "the three payloads, one after another"
+    }
+   ]
+  },
+  {
+   "name": "type 39",
+   "type": 39,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3-4",
+     "field": "an id"
+    },
+    {
+     "at": "5-6",
+     "field": "a 16 bit value"
+    },
+    {
+     "at": "7-10",
+     "field": "a 32 bit value"
+    },
+    {
+     "at": "11",
+     "field": "a byte"
+    }
+   ]
+  },
+  {
+   "name": "type 40",
+   "type": 40,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "3-4",
+     "field": "an id"
+    },
+    {
+     "at": "5",
+     "field": "a byte"
+    },
+    {
+     "at": "6..",
+     "field": "payload, to the length in bytes 1-2"
+    }
+   ]
+  },
+  {
+   "name": "type 42",
+   "type": 42,
+   "bytes": [
+    {
+     "at": "0",
+     "field": "type"
+    },
+    {
+     "at": "1-2",
+     "field": "length"
+    },
+    {
+     "at": "8",
+     "field": "bits 4-5: 0 stops a receiver acting on Region, Channel Data, Show List, the theme commands and types 36 and 37; 1 lets it act on them again; 2 and 3 do nothing"
+    },
+    {
+     "at": "3-25",
+     "field": "otherwise unexplained"
+    }
+   ]
+  }
+ ],
+ "flags": [
+  {
+   "byte": "Command byte 0",
+   "bits": [
+    {
+     "mask": 63,
+     "field": "type",
+     "note": "The command type."
+    },
+    {
+     "mask": 128,
+     "field": "encrypted",
+     "note": "The command is encrypted. An encrypted Show List keeps bytes 0-10 - version, channel, start and slot count - in the clear and enciphers its slots."
+    },
+    {
+     "mask": 64,
+     "field": "key",
+     "note": "Which of two keys enciphered it."
+    }
+   ]
+  },
+  {
+   "byte": "Show Title byte 2",
+   "bits": [
+    {
+     "mask": 128,
+     "field": "compressed",
+     "note": "The title is compressed."
+    },
+    {
+     "mask": 64,
+     "field": "closedCaptioned",
+     "note": "The program is closed captioned."
+    },
+    {
+     "mask": 32,
+     "field": "stereo",
+     "note": "The program is in stereo."
+    },
+    {
+     "mask": 16,
+     "field": "blackAndWhite",
+     "note": "The program is in black and white."
+    },
+    {
+     "mask": 15,
+     "field": "unused",
+     "note": "Unused; no part of the show id."
+    }
+   ]
+  },
+  {
+   "byte": "Show Description byte 2",
+   "bits": [
+    {
+     "mask": 128,
+     "field": "compressed",
+     "note": "The text is compressed."
+    },
+    {
+     "mask": 64,
+     "field": "closedCaptioned",
+     "note": "The program described is closed captioned, as its Show Title says."
+    },
+    {
+     "mask": 32,
+     "field": "stereo",
+     "note": "The program described is in stereo."
+    },
+    {
+     "mask": 16,
+     "field": "blackAndWhite",
+     "note": "The program described is in black and white."
+    },
+    {
+     "mask": 8,
+     "field": "extended",
+     "note": "Rating, advisories and year precede the text, which then starts at byte 10."
+    }
+   ]
+  },
+  {
+   "byte": "Show List slot byte 0",
+   "bits": [
+    {
+     "mask": 128,
+     "field": "hasDescription",
+     "note": "Two more bytes follow: a description id."
+    },
+    {
+     "mask": 64,
+     "field": "payPerView",
+     "note": "Pay per view."
+    },
+    {
+     "mask": 32,
+     "field": "hasShowGroup",
+     "note": "Two more bytes follow: a show group."
+    },
+    {
+     "mask": 30,
+     "field": "unused",
+     "note": "Unused."
+    },
+    {
+     "mask": 1,
+     "field": "joinedInProgress",
+     "note": "On a list's first slot: the program was already running when the list starts."
+    }
+   ]
+  },
+  {
+   "byte": "Show Description byte 8, content advisories",
+   "bits": [
+    {
+     "mask": 2,
+     "field": "nudity",
+     "note": "The program carries this advisory."
+    },
+    {
+     "mask": 4,
+     "field": "violence",
+     "note": "The program carries this advisory."
+    },
+    {
+     "mask": 8,
+     "field": "adult situations",
+     "note": "The program carries this advisory."
+    },
+    {
+     "mask": 16,
+     "field": "adult themes",
+     "note": "The program carries this advisory."
+    },
+    {
+     "mask": 128,
+     "field": "adult language",
+     "note": "The program carries this advisory."
+    },
+    {
+     "mask": 1,
+     "field": "unknown bit 0",
+     "note": "Unknown."
+    },
+    {
+     "mask": 32,
+     "field": "unknown bit 5",
+     "note": "Unknown."
+    },
+    {
+     "mask": 64,
+     "field": "unknown bit 6",
+     "note": "Unknown."
+    }
+   ]
+  },
+  {
+   "byte": "Time byte 6",
+   "bits": [
+    {
+     "mask": 15,
+     "field": "utcOffsetHours",
+     "note": "The station's standard offset from GMT, whole hours."
+    },
+    {
+     "mask": 16,
+     "field": "offsetIsNegative",
+     "note": "The offset is west of Greenwich."
+    },
+    {
+     "mask": 64,
+     "field": "notAProvider",
+     "note": "This channel is not a StarSight provider: a receiver scanning for the guide passes it over."
+    },
+    {
+     "mask": 128,
+     "field": "daylightSaving",
+     "note": "Daylight saving is in force: the wall clock is an hour ahead of the offset."
+    }
+   ]
+  },
+  {
+   "byte": "Channel Data byte 5",
+   "bits": [
+    {
+     "mask": 2,
+     "field": "showsCallSign",
+     "note": "A cable service, shown by its name rather than a channel number."
+    }
+   ]
+  },
+  {
+   "byte": "Channel Data byte 7",
+   "bits": [
+    {
+     "mask": 255,
+     "field": "short label",
+     "note": "Read from 0x80 down, one bit per character of bytes 8-15: the characters selected make a 4 character label for a display too narrow for the whole name. HEADLINE with 0x9A gives HDLN, CINEMAX with 0x0E gives MAX. Zero for a station."
+    }
+   ]
+  },
+  {
+   "byte": "Region byte 5",
+   "bits": [
+    {
+     "mask": 32,
+     "field": "cable",
+     "note": "A cable system's lineup rather than an antenna's."
+    },
+    {
+     "mask": 1,
+     "field": "applyNow",
+     "note": "Use this lineup at once. Otherwise it waits until the stream's clock reaches its effective time."
+    }
+   ]
+  },
+  {
+   "byte": "Region lineup entry byte 3",
+   "bits": [
+    {
+     "mask": 3,
+     "field": "tier",
+     "note": "The tier a cable system sells the channel in: 0 basic, 1 extended, 2 premium, 3 pay per view."
+    },
+    {
+     "mask": 192,
+     "field": "unknown",
+     "note": "Unknown."
+    }
+   ]
+  },
+  {
+   "byte": "Subscriber Reset byte 2",
+   "bits": [
+    {
+     "mask": 1,
+     "field": "clear stored guide",
+     "note": "Clear the stored lineup, schedules and themes."
+    },
+    {
+     "mask": 2,
+     "field": "clear stored guide and stop loading",
+     "note": "Clear them, and stop loading the guide until restarted."
+    }
+   ]
+  }
+ ],
+ "compression": {
+  "symbols": 127,
+  "maxCodeBits": 20,
+  "table": [
+   {
+    "code": "0100",
+    "symbol": "i"
+   },
+   {
+    "code": "0111",
+    "symbol": " "
+   },
+   {
+    "code": "1000",
+    "symbol": "e"
+   },
+   {
+    "code": "00011",
+    "symbol": "s "
+   },
+   {
+    "code": "00100",
+    "symbol": "m"
+   },
+   {
+    "code": "00101",
+    "symbol": "h"
+   },
+   {
+    "code": "00111",
+    "symbol": "d"
+   },
+   {
+    "code": "01101",
+    "symbol": "r"
+   },
+   {
+    "code": "10100",
+    "symbol": "c"
+   },
+   {
+    "code": "10110",
+    "symbol": "s"
+   },
+   {
+    "code": "10111",
+    "symbol": "t"
+   },
+   {
+    "code": "11001",
+    "symbol": "l"
+   },
+   {
+    "code": "11101",
+    "symbol": "o"
+   },
+   {
+    "code": "11110",
+    "symbol": "a"
+   },
+   {
+    "code": "000000",
+    "symbol": "n"
+   },
+   {
+    "code": "000010",
+    "symbol": "a "
+   },
+   {
+    "code": "000011",
+    "symbol": "ar"
+   },
+   {
+    "code": "000100",
+    "symbol": ", "
+   },
+   {
+    "code": "001100",
+    "symbol": "er"
+   },
+   {
+    "code": "010100",
+    "symbol": "f"
+   },
+   {
+    "code": "010101",
+    "symbol": "b"
+   },
+   {
+    "code": "010110",
+    "symbol": "in"
+   },
+   {
+    "code": "011001",
+    "symbol": "an"
+   },
+   {
+    "code": "100111",
+    "symbol": "\u0000"
+   },
+   {
+    "code": "101010",
+    "symbol": "g"
+   },
+   {
+    "code": "110000",
+    "symbol": "."
+   },
+   {
+    "code": "110100",
+    "symbol": "u"
+   },
+   {
+    "code": "110110",
+    "symbol": "e "
+   },
+   {
+    "code": "111000",
+    "symbol": "p"
+   },
+   {
+    "code": "0000010",
+    "symbol": "to "
+   },
+   {
+    "code": "0011011",
+    "symbol": "or"
+   },
+   {
+    "code": "0101111",
+    "symbol": " the "
+   },
+   {
+    "code": "0110000",
+    "symbol": "er "
+   },
+   {
+    "code": "0110001",
+    "symbol": "A"
+   },
+   {
+    "code": "1001000",
+    "symbol": "th"
+   },
+   {
+    "code": "1001001",
+    "symbol": "al"
+   },
+   {
+    "code": "1001011",
+    "symbol": "y"
+   },
+   {
+    "code": "1010110",
+    "symbol": "t "
+   },
+   {
+    "code": "1010111",
+    "symbol": "st"
+   },
+   {
+    "code": "1100011",
+    "symbol": "k"
+   },
+   {
+    "code": "1101110",
+    "symbol": "y "
+   },
+   {
+    "code": "1110010",
+    "symbol": "on"
+   },
+   {
+    "code": "1111101",
+    "symbol": "v"
+   },
+   {
+    "code": "1111110",
+    "symbol": "en"
+   },
+   {
+    "code": "1111111",
+    "symbol": "w"
+   },
+   {
+    "code": "00000111",
+    "symbol": "H"
+   },
+   {
+    "code": "00010100",
+    "symbol": "for"
+   },
+   {
+    "code": "00010101",
+    "symbol": "-"
+   },
+   {
+    "code": "00010111",
+    "symbol": "D"
+   },
+   {
+    "code": "00110100",
+    "symbol": "J"
+   },
+   {
+    "code": "00110101",
+    "symbol": "R"
+   },
+   {
+    "code": "01011101",
+    "symbol": "'s "
+   },
+   {
+    "code": "10010101",
+    "symbol": "B"
+   },
+   {
+    "code": "10011000",
+    "symbol": "un"
+   },
+   {
+    "code": "10011010",
+    "symbol": "of "
+   },
+   {
+    "code": "11000100",
+    "symbol": "ed "
+   },
+   {
+    "code": "11000101",
+    "symbol": "ur"
+   },
+   {
+    "code": "11010101",
+    "symbol": "M"
+   },
+   {
+    "code": "11010110",
+    "symbol": "C"
+   },
+   {
+    "code": "11010111",
+    "symbol": "S"
+   },
+   {
+    "code": "11100110",
+    "symbol": "ing "
+   },
+   {
+    "code": "11100111",
+    "symbol": "and "
+   },
+   {
+    "code": "000001101",
+    "symbol": "The "
+   },
+   {
+    "code": "000101100",
+    "symbol": "with "
+   },
+   {
+    "code": "000101101",
+    "symbol": "z"
+   },
+   {
+    "code": "010111000",
+    "symbol": "K"
+   },
+   {
+    "code": "100101000",
+    "symbol": ";"
+   },
+   {
+    "code": "100110010",
+    "symbol": "E"
+   },
+   {
+    "code": "100110011",
+    "symbol": "x"
+   },
+   {
+    "code": "100110111",
+    "symbol": "tion"
+   },
+   {
+    "code": "110101000",
+    "symbol": "\""
+   },
+   {
+    "code": "110111100",
+    "symbol": "F"
+   },
+   {
+    "code": "110111101",
+    "symbol": "P"
+   },
+   {
+    "code": "110111110",
+    "symbol": "G"
+   },
+   {
+    "code": "110111111",
+    "symbol": "W"
+   },
+   {
+    "code": "111110000",
+    "symbol": "T"
+   },
+   {
+    "code": "111110011",
+    "symbol": "L"
+   },
+   {
+    "code": "0101110010",
+    "symbol": "O"
+   },
+   {
+    "code": "0101110011",
+    "symbol": "q"
+   },
+   {
+    "code": "1001010011",
+    "symbol": "V"
+   },
+   {
+    "code": "1001101100",
+    "symbol": "when "
+   },
+   {
+    "code": "1101010010",
+    "symbol": "I"
+   },
+   {
+    "code": "1111100010",
+    "symbol": ":"
+   },
+   {
+    "code": "1111100100",
+    "symbol": "N"
+   },
+   {
+    "code": "1111100101",
+    "symbol": "j"
+   },
+   {
+    "code": "00000110000",
+    "symbol": "Y"
+   },
+   {
+    "code": "00000110001",
+    "symbol": "("
+   },
+   {
+    "code": "00000110010",
+    "symbol": ")"
+   },
+   {
+    "code": "10010100100",
+    "symbol": "U"
+   },
+   {
+    "code": "10011011010",
+    "symbol": "9"
+   },
+   {
+    "code": "10011011011",
+    "symbol": "0"
+   },
+   {
+    "code": "11010100111",
+    "symbol": "1"
+   },
+   {
+    "code": "11111000111",
+    "symbol": "'"
+   },
+   {
+    "code": "000001100110",
+    "symbol": "Z"
+   },
+   {
+    "code": "100101001010",
+    "symbol": "7"
+   },
+   {
+    "code": "110101001101",
+    "symbol": "2"
+   },
+   {
+    "code": "111110001101",
+    "symbol": ","
+   },
+   {
+    "code": "1001010010110",
+    "symbol": "8"
+   },
+   {
+    "code": "1001010010111",
+    "symbol": "6"
+   },
+   {
+    "code": "1101010011000",
+    "symbol": "5"
+   },
+   {
+    "code": "1101010011001",
+    "symbol": "Q"
+   },
+   {
+    "code": "1111100011000",
+    "symbol": "3"
+   },
+   {
+    "code": "1111100011001",
+    "symbol": "4"
+   },
+   {
+    "code": "00000110011100",
+    "symbol": "&"
+   },
+   {
+    "code": "00000110011111",
+    "symbol": "$"
+   },
+   {
+    "code": "000001100111010",
+    "symbol": "?"
+   },
+   {
+    "code": "000001100111100",
+    "symbol": "X"
+   },
+   {
+    "code": "0000011001110111",
+    "symbol": "/"
+   },
+   {
+    "code": "0000011001111011",
+    "symbol": "!"
+   },
+   {
+    "code": "00000110011101100",
+    "symbol": "`"
+   },
+   {
+    "code": "00000110011101101",
+    "symbol": "*"
+   },
+   {
+    "code": "00000110011110100000",
+    "symbol": "+"
+   },
+   {
+    "code": "00000110011110100001",
+    "symbol": "<"
+   },
+   {
+    "code": "00000110011110100010",
+    "symbol": "="
+   },
+   {
+    "code": "00000110011110100011",
+    "symbol": ">"
+   },
+   {
+    "code": "00000110011110100100",
+    "symbol": "@"
+   },
+   {
+    "code": "00000110011110100101",
+    "symbol": "["
+   },
+   {
+    "code": "00000110011110100110",
+    "symbol": "\\"
+   },
+   {
+    "code": "00000110011110100111",
+    "symbol": "]"
+   },
+   {
+    "code": "00000110011110101000",
+    "symbol": "^"
+   },
+   {
+    "code": "00000110011110101001",
+    "symbol": "_"
+   },
+   {
+    "code": "00000110011110101010",
+    "symbol": "{"
+   },
+   {
+    "code": "00000110011110101011",
+    "symbol": "|"
+   },
+   {
+    "code": "00000110011110101100",
+    "symbol": "}"
+   },
+   {
+    "code": "00000110011110101101",
+    "symbol": "~"
+   },
+   {
+    "code": "00000110011110101110",
+    "symbol": "#"
+   },
+   {
+    "code": "00000110011110101111",
+    "symbol": "%"
+   }
+  ]
+ }
+}
