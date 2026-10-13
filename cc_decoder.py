@@ -92,6 +92,7 @@ from lib.cc_decode import (
     decode_xds_packets,
     PREAMBLE_RUN_IN_COUNT
 )
+from lib.amol_decode import decode_amol, extract_amol_words
 
 import numpy as np
 
@@ -103,7 +104,11 @@ class ClosedCaptionFileDecoder(object):
                 'html': decode_to_html,
                 'raw': decode_captions_raw,
                 'debug': decode_captions_debug,
-                'xds': decode_xds_packets}
+                'xds': decode_xds_packets,
+                'amol': decode_amol}
+
+    # formats that consume AMOL words rather than line 21 caption rows
+    AMOL_FORMATS = {'amol'}
 
     def __init__(self, ffmpeg_path, ffmpeg_pre_scale, ffmpeg_hw_accel, deinterlaced, ccformat, start_line, end_line, quiet, frame_rate, min_correlation, preamble_run_in_count, debug_plot):
         self.ffmpeg_path = ffmpeg_path
@@ -196,7 +201,9 @@ class ClosedCaptionFileDecoder(object):
             end_line,
             min_correlation,
             preamble_run_in_count,
-            debug_plot
+            debug_plot,
+            want_cc=True,
+            want_amol=False
     ):
         setproctitle(multiprocessing.current_process().name)
         try:
@@ -233,7 +240,9 @@ class ClosedCaptionFileDecoder(object):
 
                 image = np.frombuffer(image_buffer, dtype=np.uint8).reshape(image_height, image_width)
 
-                tx.send(extract_closed_caption_bytes(image, start_line, search_lines, min_correlation, debug_plot))
+                rows = extract_closed_caption_bytes(image, start_line, search_lines, min_correlation, debug_plot) if want_cc else []
+                amol_words = extract_amol_words(image, start_line, search_lines) if want_amol else []
+                tx.send((rows, amol_words))
         except (InterruptedError, KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -242,7 +251,10 @@ class ClosedCaptionFileDecoder(object):
     def decode(self, filename, output_filename):
         running_decoders = []
         running_decoders_conns = []
+        running_decoders_amol = []
         formats = self.format.split(",")
+        want_amol = any(format in self.AMOL_FORMATS for format in formats)
+        want_cc = any(format in self.DECODERS and format not in self.AMOL_FORMATS for format in formats)
         options = {
             "frame_rate": self.frame_rate
         }
@@ -257,6 +269,7 @@ class ClosedCaptionFileDecoder(object):
                 decoder.start()
                 running_decoders.append(decoder)
                 running_decoders_conns.append(tx)
+                running_decoders_amol.append(format in self.AMOL_FORMATS)
 
         exception = None
 
@@ -281,6 +294,8 @@ class ClosedCaptionFileDecoder(object):
                     self.min_correlation,
                     self.preamble_run_in_count,
                     self.debug_plot,
+                    want_cc,
+                    want_amol,
                 )
             )
             image_decoder_process.start()
@@ -296,13 +311,14 @@ class ClosedCaptionFileDecoder(object):
             try:
                 while True:
                     try:
-                        rows = row_rx.recv()
-                        if rows == "DONE":
+                        data = row_rx.recv()
+                        if data == "DONE":
                             break
+                        rows, amol_words = data
 
                         # send decoded data to all decoder processes
-                        for conn in running_decoders_conns:
-                            conn.send(rows)
+                        for conn, is_amol in zip(running_decoders_conns, running_decoders_amol):
+                            conn.send(amol_words if is_amol else rows)
 
                         # send data to status process
                         if not self.quiet:
@@ -371,6 +387,7 @@ def main():
                                     '  html  - HTML output with styling and colors\n'
                                     '  text  - Plain text output (TEXT mode only)\n'
                                     '  xds   - eXtended Data Services (XDS) data\n'
+                                    '  amol  - Nielsen AMOL I source ID, broadcast clock and text (line 20 / 22, needs VBI in the input)\n'
                                     '  raw   - Raw caption data\n'
                                     '  debug - Debug output'
                                 )

@@ -28,6 +28,9 @@ Extract XDS information
 Extract Text channel information
 * `cc_decoder.py --ccformat text -o video_file video_file.mpg`
 
+Extract Nielsen AMOL data (source ID, broadcast clock and text)
+* `cc_decoder.py --ccformat amol --start_line 30 --end_line 45 -o video_file video_file.mkv`
+
 Examples
 ========
 
@@ -64,6 +67,7 @@ Output Options:
                           html  - HTML output with styling and colors
                           text  - Plain text output (TEXT mode only)
                           xds   - eXtended Data Services (XDS) data
+                          amol  - Nielsen AMOL I source ID, broadcast clock and text (line 20 / 22, needs VBI in the input)
                           raw   - Raw caption data
                           debug - Debug output
 
@@ -87,6 +91,41 @@ Decoding Options:
                           29.97 (NTSC) [default]
                           25    (PAL)
 ```
+
+AMOL
+====
+
+AMOL I (Automated Measurement Of Lineups) is a 48 bit data word Nielsen had networks
+insert on line 20 (sometimes line 22, field 2) of NTSC broadcasts so its meters could log
+which program aired and when. Each frame carries one word with a frame address that counts
+0-29, once per second. Frame addresses 2 and 3 carry a source ID and the broadcast clock;
+some feeds also carry short text strings.
+
+`--ccformat amol` writes `<output>.amol` with one line per second of timestamps, any text,
+and a summary of words, parity errors and repaired frame addresses:
+
+```
+1234: SID 37 (NBC)  4/30  3:28:12 PM
+1264: SID 37 (NBC)  4/30  3:28:13 PM
+1264: TEXT NBC NIGHTLY NEWS
+```
+
+Notes:
+* AMOL runs at twice the line 21 bit rate, so the input needs line 20 or 22 intact. Many DVD and
+  MPEG-2 transfers start at line 21 or 23 and drop it; full VBI captures (for example
+  ld-decode / vhs-decode output) work best. Use `--start_line` / `--end_line` to cover the
+  rows that hold line 20 / 22 in your capture.
+* AMOL can be decoded together with captions, e.g. `--ccformat srt,amol`, as long as the
+  search range covers both lines.
+* The decoder learns the bit width from the first clean words of a video and then only
+  fits the phase on each line, which keeps idle words (no data, so few edges) reliable.
+* Like drop-frame timecode, the frame address skips 0 and 1 at the start of most minutes;
+  this is expected and not counted as an error.
+* Gaps in the timestamps are usually real: local commercial breaks and some programmes carry
+  no AMOL, or a different source ID.
+* Only AMOL I is decoded. AMOL II (96 bits per line) is not supported.
+* The AMOL word layout was documented by the [Teletext Rescue](https://github.com/AssunaYuuki/teletext_rescue)
+  project; this decoder is an independent implementation of that description.
 
 Performance
 ===========
