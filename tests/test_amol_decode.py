@@ -6,7 +6,7 @@ from unittest import TestCase
 import numpy as np
 
 from lib.amol_decode import (
-    AMOL_BIT_COUNT, AmolSlicer, AmolStreamDecoder, amol_data, AmolTimestamp, amol_frame_address, amol_parity_ok, build_amol_word,
+    AMOL_BIT_COUNT, AmolSlicer, AmolStreamDecoder, amol_data, amol_is_null, amol_word_valid, AmolTimestamp, amol_frame_address, amol_parity_ok, build_amol_word,
     build_text_data, build_timestamp_data, decode_amol, decode_text_chunk, extract_amol_words, slice_amol_line,
 )
 
@@ -72,6 +72,12 @@ class TestAmolWord(TestCase):
     def test_inverted_timestamp(self):
         t = AmolTimestamp(stamp_word(27, 5, invert=True), 27, inverted=True)
         self.assertEqual(t.key(), (37, 4, 30, 3, 28, 5, True))
+
+    def test_null_word(self):
+        null = build_amol_word(4, 0) & ~1
+        self.assertTrue(amol_word_valid(null))
+        self.assertTrue(amol_word_valid(build_amol_word(5, 0)))
+        self.assertFalse(amol_word_valid(build_amol_word(5, 0x10) ^ 1))
 
     def test_text_chunk(self):
         self.assertEqual(decode_text_chunk(build_amol_word(20, build_text_data("NBC N"))), "NBC N")
@@ -225,6 +231,14 @@ class TestAmolStream(TestCase):
         stamps = [l.split("  ")[-1] for l in out if "SID" in l]
         self.assertEqual(stamps, ["3:28:58 PM", "3:28:59 PM", "3:29:00 PM", "3:29:01 PM"])
         self.assertEqual(decoder.repaired, 0)
+
+    def test_null_idle_words(self):
+        # 1992 feeds send idle frames with the parity bit zero too; those are not parity errors
+        words = [w if amol_data(w) else w & ~1 for w in frames_for_seconds(2)]
+        self.assertTrue(any(amol_is_null(w) and not amol_parity_ok(w) for w in words))
+        out, decoder = self.decode(words)
+        self.assertEqual(decoder.parity_errors, 0)
+        self.assertEqual(len([l for l in out if "SID" in l]), 2)
 
     def test_timestamp_at_26_27(self):
         words = []

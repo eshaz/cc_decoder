@@ -121,6 +121,8 @@ Notes:
   fits the phase on each line, which keeps idle words (no data, so few edges) reliable.
 * Like drop-frame timecode, the frame address skips 0 and 1 at the start of most minutes;
   this is expected and not counted as an error.
+* Some feeds carry the timestamp in frame addresses 26/27 (27 bit-inverted) instead of 2/3, and
+  older feeds send idle frames as null words without parity; both are handled.
 * Gaps in the timestamps are usually real: local commercial breaks and some programmes carry
   no AMOL, or a different source ID.
 * Only AMOL I is decoded. AMOL II (96 bits per line) is not supported.

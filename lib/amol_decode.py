@@ -25,6 +25,8 @@ Seen in off-air recordings (cx23885 captures, 1997-1999):
   * the word starts about 12 us after 0H and ends about 60 us, inside the 720 sample Rec. 601 line;
   * frame addresses skip 0 and 1 at the start of most minutes (29 -> 2), like drop-frame timecode;
   * networks fill other frame addresses with their own data (CBS: text, e.g. "CBS  NET04NY019");
+  * some feeds send the timestamp in frame addresses 26/27 instead of 2/3 (Cartoon Network, 1999);
+  * older feeds send idle frames as null words, parity bit included (KDFW/CBS, 1992);
   * local breaks and some programmes carry no AMOL or a different source ID.
 
 The word layout and the observed source IDs were documented by the Teletext Rescue project
@@ -99,6 +101,17 @@ def amol_data(word):
 def amol_parity_ok(word):
     """ Odd parity over the frame address, data and parity bit (the last 41 bits) """
     return bin(word & ((1 << 41) - 1)).count("1") % 2 == 1
+
+
+def amol_is_null(word):
+    """ A null word: data and parity bit all zero. Some feeds (KDFW/CBS, 1992) send idle frames this
+        way instead of with odd parity, so the frame address of a null word is unprotected. """
+    return word & ((1 << 36) - 1) == 0
+
+
+def amol_word_valid(word):
+    """ Passes odd parity, or is a null word """
+    return amol_parity_ok(word) or amol_is_null(word)
 
 
 def build_amol_word(frame_address, data, invert_data=False):
@@ -304,7 +317,7 @@ class AmolSlicer(object):
         if result is None:
             return None
         word, quality, width, origin, measured = result
-        if measured and quality >= 0.3 and amol_parity_ok(word):
+        if measured and quality >= 0.3 and amol_word_valid(word):
             self.widths.append(width)
             del self.widths[:-self.WINDOW]
             if len(self.widths) >= self.LEARN_WORDS:
@@ -433,7 +446,7 @@ class AmolStreamDecoder(object):
 
     def add_frame(self, frame, word):
         self.words += 1
-        if not amol_parity_ok(word):
+        if not amol_word_valid(word):
             self.parity_errors += 1
         fa = self._frame_address(frame, word)
         self.last_frame, self.last_fa = frame, fa
